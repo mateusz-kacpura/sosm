@@ -2,7 +2,46 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import AccountsPage from "@/app/accounts/page";
 
+const mockAccounts = [
+  { id: 1, fb_email: "marcin.fb@gmail.com", proxy_url: "185.23.44.11:8080", created_at: "2024-03-10T00:00:00Z" },
+  { id: 2, fb_email: "tester.sosm@wp.pl", proxy_url: null, created_at: "2024-03-09T00:00:00Z" },
+];
+
 describe("AccountsPage", () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, opts?: any) => {
+        if (url.includes("/accounts/") && (!opts || !opts.method || opts.method === "GET")) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve(mockAccounts),
+            statusText: "OK",
+          });
+        }
+        if (opts?.method === "POST") {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ id: 3, fb_email: "new@fb.com", proxy_url: null, created_at: "2024-03-11T00:00:00Z" }),
+            statusText: "OK",
+          });
+        }
+        if (opts?.method === "DELETE") {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ detail: "Account deleted" }),
+            statusText: "OK",
+          });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([]), statusText: "OK" });
+      })
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("renders page title", async () => {
     render(<AccountsPage />);
     await waitFor(() => {
@@ -10,7 +49,7 @@ describe("AccountsPage", () => {
     });
   });
 
-  it("renders account table with mock data", async () => {
+  it("renders account table with API data", async () => {
     render(<AccountsPage />);
     await waitFor(() => {
       expect(screen.getByText("marcin.fb@gmail.com")).toBeInTheDocument();
@@ -19,23 +58,31 @@ describe("AccountsPage", () => {
     expect(screen.getByText("185.23.44.11:8080")).toBeInTheDocument();
   });
 
-  it("shows add account button", () => {
+  it("shows add account button", async () => {
     render(<AccountsPage />);
-    expect(screen.getByText("Dodaj Konto")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("Dodaj Konto")).toBeInTheDocument();
+    });
   });
 
   it("opens dialog when clicking add button", async () => {
     const user = userEvent.setup();
     render(<AccountsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Dodaj Konto")).toBeInTheDocument();
+    });
     await user.click(screen.getByText("Dodaj Konto"));
     await waitFor(() => {
       expect(screen.getByText("Nowe Konto Facebook")).toBeInTheDocument();
     });
   });
 
-  it("adds new account via form submission", async () => {
+  it("submits new account form", async () => {
     const user = userEvent.setup();
     render(<AccountsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Dodaj Konto")).toBeInTheDocument();
+    });
 
     await user.click(screen.getByText("Dodaj Konto"));
     await waitFor(() => {
@@ -47,15 +94,70 @@ describe("AccountsPage", () => {
     await user.click(screen.getByText("Zapisz Konto"));
 
     await waitFor(() => {
-      expect(screen.getByText("new@fb.com")).toBeInTheDocument();
+      expect(fetch).toHaveBeenCalledWith(
+        "http://localhost:8010/api/accounts/",
+        expect.objectContaining({ method: "POST" })
+      );
     });
   });
 
-  it("displays account statuses", async () => {
+  it("shows delete buttons for each account", async () => {
     render(<AccountsPage />);
     await waitFor(() => {
-      const statuses = screen.getAllByText("Aktywne");
-      expect(statuses.length).toBeGreaterThanOrEqual(2);
+      const deleteButtons = screen.getAllByText("Usuń");
+      expect(deleteButtons.length).toBe(2);
+    });
+  });
+
+  it("calls delete API when clicking delete", async () => {
+    const user = userEvent.setup();
+    render(<AccountsPage />);
+    await waitFor(() => {
+      expect(screen.getAllByText("Usuń").length).toBe(2);
+    });
+
+    await user.click(screen.getAllByText("Usuń")[0]);
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "http://localhost:8010/api/accounts/1",
+        expect.objectContaining({ method: "DELETE" })
+      );
+    });
+  });
+
+  it("shows empty state when no accounts", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([]),
+          statusText: "OK",
+        })
+      )
+    );
+    render(<AccountsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Brak kont")).toBeInTheDocument();
+    });
+  });
+
+  it("shows 'Brak' for null proxy_url", async () => {
+    render(<AccountsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Brak")).toBeInTheDocument();
+    });
+  });
+
+  it("shows error state on API failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve({ ok: false, statusText: "Server Error" }))
+    );
+    render(<AccountsPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Błąd/)).toBeInTheDocument();
     });
   });
 });

@@ -26,8 +26,7 @@ class TestRunBotTask:
     async def test_success(self, db_session, mock_session_local, mock_browser_setup):
         mock_page, mock_manager = mock_browser_setup
 
-        from app.models.models import Account, Campaign, Post
-        from tests.factories import AccountFactory, CampaignFactory, PostFactory
+        from tests.factories import AccountFactory, CampaignFactory, GroupFactory
 
         account = AccountFactory.create()
         db_session.add(account)
@@ -37,8 +36,8 @@ class TestRunBotTask:
         db_session.add(campaign)
         await db_session.flush()
 
-        post = PostFactory.create(campaign_id=campaign.id)
-        db_session.add(post)
+        group = GroupFactory.create(campaign_id=campaign.id)
+        db_session.add(group)
         await db_session.flush()
 
         mock_actions = AsyncMock()
@@ -51,7 +50,8 @@ class TestRunBotTask:
                     from app.worker import run_bot_task
                     result = await run_bot_task(
                         "test@fb.com", "pass", None,
-                        "https://fb.com/groups/1", "Hello", post.id,
+                        "https://fb.com/groups/1", "Hello", group.id,
+                        campaign_name="Test Campaign",
                     )
 
         assert result is True
@@ -61,7 +61,7 @@ class TestRunBotTask:
     async def test_login_failure(self, db_session, mock_session_local, mock_browser_setup):
         mock_page, mock_manager = mock_browser_setup
 
-        from tests.factories import AccountFactory, CampaignFactory, PostFactory
+        from tests.factories import AccountFactory, CampaignFactory, GroupFactory
 
         account = AccountFactory.create()
         db_session.add(account)
@@ -69,8 +69,8 @@ class TestRunBotTask:
         campaign = CampaignFactory.create(account_id=account.id)
         db_session.add(campaign)
         await db_session.flush()
-        post = PostFactory.create(campaign_id=campaign.id)
-        db_session.add(post)
+        group = GroupFactory.create(campaign_id=campaign.id)
+        db_session.add(group)
         await db_session.flush()
 
         mock_actions = AsyncMock()
@@ -82,7 +82,8 @@ class TestRunBotTask:
                     from app.worker import run_bot_task
                     result = await run_bot_task(
                         "test@fb.com", "pass", None,
-                        "https://fb.com/groups/1", "Hello", post.id,
+                        "https://fb.com/groups/1", "Hello", group.id,
+                        campaign_name="Test Campaign",
                     )
 
         assert result is False
@@ -90,7 +91,7 @@ class TestRunBotTask:
     async def test_publish_failure(self, db_session, mock_session_local, mock_browser_setup):
         mock_page, mock_manager = mock_browser_setup
 
-        from tests.factories import AccountFactory, CampaignFactory, PostFactory
+        from tests.factories import AccountFactory, CampaignFactory, GroupFactory
 
         account = AccountFactory.create()
         db_session.add(account)
@@ -98,8 +99,8 @@ class TestRunBotTask:
         campaign = CampaignFactory.create(account_id=account.id)
         db_session.add(campaign)
         await db_session.flush()
-        post = PostFactory.create(campaign_id=campaign.id)
-        db_session.add(post)
+        group = GroupFactory.create(campaign_id=campaign.id)
+        db_session.add(group)
         await db_session.flush()
 
         mock_actions = AsyncMock()
@@ -112,14 +113,12 @@ class TestRunBotTask:
                     from app.worker import run_bot_task
                     result = await run_bot_task(
                         "test@fb.com", "pass", None,
-                        "https://fb.com/groups/1", "Hello", post.id,
+                        "https://fb.com/groups/1", "Hello", group.id,
+                        campaign_name="Test Campaign",
                     )
 
-        # The function returns the success value from publish_on_group
-        # which is stored in the TaskLog
-
     async def test_exception_creates_log_and_reraises(self, db_session, mock_session_local):
-        from tests.factories import AccountFactory, CampaignFactory, PostFactory
+        from tests.factories import AccountFactory, CampaignFactory, GroupFactory
 
         account = AccountFactory.create()
         db_session.add(account)
@@ -127,8 +126,8 @@ class TestRunBotTask:
         campaign = CampaignFactory.create(account_id=account.id)
         db_session.add(campaign)
         await db_session.flush()
-        post = PostFactory.create(campaign_id=campaign.id)
-        db_session.add(post)
+        group = GroupFactory.create(campaign_id=campaign.id)
+        db_session.add(group)
         await db_session.flush()
 
         mock_manager = AsyncMock()
@@ -141,7 +140,8 @@ class TestRunBotTask:
                 with pytest.raises(Exception, match="connection error"):
                     await run_bot_task(
                         "test@fb.com", "pass", None,
-                        "https://fb.com/groups/1", "Hello", post.id,
+                        "https://fb.com/groups/1", "Hello", group.id,
+                        campaign_name="Test Campaign",
                     )
 
 
@@ -158,6 +158,7 @@ class TestPublishPostTask:
                 result = publish_post_task.run(
                     "email@fb.com", "pass", None,
                     "https://fb.com/groups/1", "Hello", 42,
+                    campaign_name="Test Campaign",
                 )
 
         assert result is True
@@ -178,6 +179,7 @@ class TestPublishPostTask:
                         result = publish_post_task.run(
                             "email@fb.com", "pass", None,
                             "https://fb.com/groups/1", "Hello", 42,
+                            campaign_name="Test Campaign",
                         )
 
         assert result is True
@@ -197,8 +199,8 @@ class TestPublishPostTask:
                         publish_post_task.run(
                             "email@fb.com", "pass", None,
                             "https://fb.com/groups/1", "Hello", 42,
+                            campaign_name="Test Campaign",
                         )
-                # retry is called by our code and possibly by autoretry
                 assert mock_retry.call_count >= 1
             finally:
                 publish_post_task.pop_request()

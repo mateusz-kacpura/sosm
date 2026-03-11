@@ -2,13 +2,13 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { 
-  LayoutDashboard, 
-  Users, 
-  Megaphone, 
-  History, 
-  Settings, 
-  LogOut 
+import {
+  LayoutDashboard,
+  Users,
+  Megaphone,
+  History,
+  Fingerprint,
+  LogOut
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -17,6 +17,7 @@ const menuItems = [
   { name: "Konta FB", href: "/accounts", icon: Users },
   { name: "Kampanie", href: "/campaigns", icon: Megaphone },
   { name: "Historia Logów", href: "/logs", icon: History },
+  { name: "Fingerprint Test", href: "/fingerprint-test", icon: Fingerprint },
 ]
 
 export function Sidebar() {

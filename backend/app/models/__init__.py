@@ -1,5 +1,4 @@
 from app.core.database import Base
-from .models import User, Account, Campaign, Group, Post, TaskLog
+from .models import Account, Campaign, Group, TaskLog, FingerprintTest
 
-# Udostępniamy modele dla autogeneracji w Alembic
-__all__ = ["Base", "User", "Account", "Campaign", "Group", "Post", "TaskLog"]
+__all__ = ["Base", "Account", "Campaign", "Group", "TaskLog", "FingerprintTest"]

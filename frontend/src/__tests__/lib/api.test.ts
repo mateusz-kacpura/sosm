@@ -89,18 +89,34 @@ describe("api object", () => {
   });
 
   it("accounts.create sends POST", async () => {
-    await api.accounts.create({ email: "a@b.com" });
+    await api.accounts.create({ fb_email: "a@b.com", fb_password: "pass" });
     expect(fetch).toHaveBeenCalledWith(
       "http://localhost:8010/api/accounts/",
       expect.objectContaining({ method: "POST" })
     );
   });
 
+  it("accounts.delete sends DELETE with id", async () => {
+    await api.accounts.delete(3);
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:8010/api/accounts/3",
+      expect.objectContaining({ method: "DELETE" })
+    );
+  });
+
   it("campaigns.update sends PATCH with id", async () => {
-    await api.campaigns.update(5, { status: "active" });
+    await api.campaigns.update(5, { status: "AKTYWNA" });
     expect(fetch).toHaveBeenCalledWith(
       "http://localhost:8010/api/campaigns/5",
       expect.objectContaining({ method: "PATCH" })
+    );
+  });
+
+  it("campaigns.groups calls correct endpoint", async () => {
+    await api.campaigns.groups(7);
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:8010/api/campaigns/7/groups",
+      expect.anything()
     );
   });
 
@@ -108,6 +124,14 @@ describe("api object", () => {
     await api.logs.list();
     expect(fetch).toHaveBeenCalledWith(
       "http://localhost:8010/api/logs/",
+      expect.anything()
+    );
+  });
+
+  it("stats calls correct endpoint", async () => {
+    await api.stats();
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:8010/api/stats/",
       expect.anything()
     );
   });

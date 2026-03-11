@@ -1,21 +1,5 @@
 from datetime import datetime, timezone
-from app.models.models import User, Account, Campaign, Group, Post, TaskLog
-
-
-class UserFactory:
-    _counter = 0
-
-    @classmethod
-    def create(cls, **overrides) -> User:
-        cls._counter += 1
-        defaults = {
-            "email": f"test{cls._counter}@example.com",
-            "hashed_password": "hashedpassword123",
-            "is_active": True,
-            "created_at": datetime.now(timezone.utc),
-        }
-        defaults.update(overrides)
-        return User(**defaults)
+from app.models.models import Account, Campaign, Group, TaskLog, FingerprintTest
 
 
 class AccountFactory:
@@ -41,7 +25,7 @@ class CampaignFactory:
             "name": "Test Campaign",
             "base_interval_minutes": 60,
             "random_deviation_percent": 10.0,
-            "status": "OCZEKUJE",
+            "status": "SZKIC",
             "created_at": datetime.now(timezone.utc),
         }
         defaults.update(overrides)
@@ -54,31 +38,40 @@ class GroupFactory:
         defaults = {
             "url": "https://facebook.com/groups/test-group",
             "name": "Test Group",
+            "content": "Test post content",
+            "media_urls": None,
+            "order": 0,
         }
         defaults.update(overrides)
         return Group(**defaults)
-
-
-class PostFactory:
-    @staticmethod
-    def create(**overrides) -> Post:
-        defaults = {
-            "content": "Test post content",
-            "media_urls": None,
-        }
-        defaults.update(overrides)
-        return Post(**defaults)
 
 
 class TaskLogFactory:
     @staticmethod
     def create(**overrides) -> TaskLog:
         defaults = {
-            "group_url": "https://facebook.com/groups/test-group",
+            "campaign_name": "Test Campaign",
             "status": "SUCCESS",
             "error_message": None,
             "screenshot_path": None,
+            "planned_at": None,
+            "retry_count": 0,
             "executed_at": datetime.now(timezone.utc),
         }
         defaults.update(overrides)
         return TaskLog(**defaults)
+
+
+class FingerprintTestFactory:
+    @staticmethod
+    def create(**overrides) -> FingerprintTest:
+        defaults = {
+            "status": "PENDING",
+            "proxy_url_used": None,
+            "results": None,
+            "error_message": None,
+            "created_at": datetime.now(timezone.utc),
+            "completed_at": None,
+        }
+        defaults.update(overrides)
+        return FingerprintTest(**defaults)

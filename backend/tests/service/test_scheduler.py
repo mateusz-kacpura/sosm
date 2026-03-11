@@ -3,8 +3,8 @@ from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock, AsyncMock, patch
 from contextlib import asynccontextmanager
 
-from app.models.models import Account, Campaign, Group, Post, TaskLog
-from tests.factories import AccountFactory, CampaignFactory, GroupFactory, PostFactory, TaskLogFactory
+from app.models.models import Account, Campaign, Group, TaskLog
+from tests.factories import AccountFactory, CampaignFactory, GroupFactory, TaskLogFactory
 
 
 @pytest.fixture
@@ -33,29 +33,7 @@ class TestCheckActiveCampaigns:
         mock_publish_task.delay.assert_not_called()
 
     async def test_campaign_without_account_skipped(self, db_session, mock_publish_task, mock_session_local):
-        campaign = CampaignFactory.create(account_id=99999, status="W TOKU")
-        db_session.add(campaign)
-        await db_session.flush()
-
-        group = GroupFactory.create(campaign_id=campaign.id)
-        db_session.add(group)
-        post = PostFactory.create(campaign_id=campaign.id)
-        db_session.add(post)
-        await db_session.flush()
-
-        with patch("app.core.scheduler.AsyncSessionLocal", mock_session_local):
-            with patch("app.worker.publish_post_task", mock_publish_task):
-                from app.core.scheduler import check_active_campaigns
-                await check_active_campaigns()
-
-        mock_publish_task.delay.assert_not_called()
-
-    async def test_campaign_without_posts_skipped(self, db_session, mock_publish_task, mock_session_local):
-        account = AccountFactory.create()
-        db_session.add(account)
-        await db_session.flush()
-
-        campaign = CampaignFactory.create(account_id=account.id, status="W TOKU")
+        campaign = CampaignFactory.create(account_id=99999, status="AKTYWNA")
         db_session.add(campaign)
         await db_session.flush()
 
@@ -75,12 +53,8 @@ class TestCheckActiveCampaigns:
         db_session.add(account)
         await db_session.flush()
 
-        campaign = CampaignFactory.create(account_id=account.id, status="W TOKU")
+        campaign = CampaignFactory.create(account_id=account.id, status="AKTYWNA")
         db_session.add(campaign)
-        await db_session.flush()
-
-        post = PostFactory.create(campaign_id=campaign.id)
-        db_session.add(post)
         await db_session.flush()
 
         with patch("app.core.scheduler.AsyncSessionLocal", mock_session_local):
@@ -90,19 +64,21 @@ class TestCheckActiveCampaigns:
 
         mock_publish_task.delay.assert_not_called()
 
-    async def test_first_post_dispatched_immediately(self, db_session, mock_publish_task, mock_session_local):
+    async def test_first_group_dispatched_immediately(self, db_session, mock_publish_task, mock_session_local):
         account = AccountFactory.create(fb_email="dispatch@fb.com", fb_password="pass123")
         db_session.add(account)
         await db_session.flush()
 
-        campaign = CampaignFactory.create(account_id=account.id, status="W TOKU")
+        campaign = CampaignFactory.create(account_id=account.id, status="AKTYWNA", name="Test Camp")
         db_session.add(campaign)
         await db_session.flush()
 
-        group = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/test")
+        group = GroupFactory.create(
+            campaign_id=campaign.id,
+            url="https://fb.com/groups/test",
+            content="First post!",
+        )
         db_session.add(group)
-        post = PostFactory.create(campaign_id=campaign.id, content="First post!")
-        db_session.add(post)
         await db_session.flush()
 
         with patch("app.core.scheduler.AsyncSessionLocal", mock_session_local):
@@ -116,26 +92,24 @@ class TestCheckActiveCampaigns:
         assert call_kwargs["account_pass"] == "pass123"
         assert call_kwargs["group_url"] == "https://fb.com/groups/test"
         assert call_kwargs["post_content"] == "First post!"
-        assert call_kwargs["post_id"] == post.id
+        assert call_kwargs["group_id"] == group.id
+        assert call_kwargs["campaign_name"] == "Test Camp"
 
-    async def test_successfully_published_post_skipped(self, db_session, mock_publish_task, mock_session_local):
+    async def test_successfully_published_group_skipped(self, db_session, mock_publish_task, mock_session_local):
         account = AccountFactory.create()
         db_session.add(account)
         await db_session.flush()
 
-        campaign = CampaignFactory.create(account_id=account.id, status="W TOKU")
+        campaign = CampaignFactory.create(account_id=account.id, status="AKTYWNA")
         db_session.add(campaign)
         await db_session.flush()
 
         group = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/done")
         db_session.add(group)
-        post = PostFactory.create(campaign_id=campaign.id)
-        db_session.add(post)
         await db_session.flush()
 
         log = TaskLogFactory.create(
-            post_id=post.id,
-            group_url="https://fb.com/groups/done",
+            group_id=group.id,
             status="SUCCESS",
         )
         db_session.add(log)
@@ -148,24 +122,21 @@ class TestCheckActiveCampaigns:
 
         mock_publish_task.delay.assert_not_called()
 
-    async def test_failed_post_retried(self, db_session, mock_publish_task, mock_session_local):
+    async def test_failed_group_retried(self, db_session, mock_publish_task, mock_session_local):
         account = AccountFactory.create()
         db_session.add(account)
         await db_session.flush()
 
-        campaign = CampaignFactory.create(account_id=account.id, status="W TOKU")
+        campaign = CampaignFactory.create(account_id=account.id, status="AKTYWNA")
         db_session.add(campaign)
         await db_session.flush()
 
         group = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/fail")
         db_session.add(group)
-        post = PostFactory.create(campaign_id=campaign.id)
-        db_session.add(post)
         await db_session.flush()
 
         log = TaskLogFactory.create(
-            post_id=post.id,
-            group_url="https://fb.com/groups/fail",
+            group_id=group.id,
             status="FAILED",
         )
         db_session.add(log)
@@ -178,33 +149,27 @@ class TestCheckActiveCampaigns:
 
         mock_publish_task.delay.assert_called_once()
 
-    async def test_interval_not_elapsed_skips_post(self, db_session, mock_publish_task, mock_session_local):
+    async def test_interval_not_elapsed_skips_group(self, db_session, mock_publish_task, mock_session_local):
         account = AccountFactory.create()
         db_session.add(account)
         await db_session.flush()
 
         campaign = CampaignFactory.create(
-            account_id=account.id, status="W TOKU",
+            account_id=account.id, status="AKTYWNA",
             base_interval_minutes=60, random_deviation_percent=0.0,
         )
         db_session.add(campaign)
         await db_session.flush()
 
-        group1 = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/g1")
-        group2 = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/g2")
+        group1 = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/g1", content="Content 1")
+        group2 = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/g2", content="Content 2")
         db_session.add(group1)
         db_session.add(group2)
-
-        post1 = PostFactory.create(campaign_id=campaign.id, content="Post 1")
-        post2 = PostFactory.create(campaign_id=campaign.id, content="Post 2")
-        db_session.add(post1)
-        db_session.add(post2)
         await db_session.flush()
 
-        # Post1 was successfully posted to g1 just 30 min ago
+        # group1 was successfully posted 30 min ago (interval is 60 min)
         log = TaskLogFactory.create(
-            post_id=post1.id,
-            group_url="https://fb.com/groups/g1",
+            group_id=group1.id,
             status="SUCCESS",
             executed_at=datetime.now(timezone.utc) - timedelta(minutes=30),
         )
@@ -219,33 +184,27 @@ class TestCheckActiveCampaigns:
 
         mock_publish_task.delay.assert_not_called()
 
-    async def test_interval_elapsed_dispatches_post(self, db_session, mock_publish_task, mock_session_local):
+    async def test_interval_elapsed_dispatches_group(self, db_session, mock_publish_task, mock_session_local):
         account = AccountFactory.create()
         db_session.add(account)
         await db_session.flush()
 
         campaign = CampaignFactory.create(
-            account_id=account.id, status="W TOKU",
+            account_id=account.id, status="AKTYWNA",
             base_interval_minutes=60, random_deviation_percent=0.0,
         )
         db_session.add(campaign)
         await db_session.flush()
 
-        group1 = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/g1")
-        group2 = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/g2")
+        group1 = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/g1", content="Content 1")
+        group2 = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/g2", content="Content 2")
         db_session.add(group1)
         db_session.add(group2)
-
-        post1 = PostFactory.create(campaign_id=campaign.id, content="Post 1")
-        post2 = PostFactory.create(campaign_id=campaign.id, content="Post 2")
-        db_session.add(post1)
-        db_session.add(post2)
         await db_session.flush()
 
-        # Post1 was successfully posted to g1 over 61 min ago
+        # group1 was successfully posted over 61 min ago
         log = TaskLogFactory.create(
-            post_id=post1.id,
-            group_url="https://fb.com/groups/g1",
+            group_id=group1.id,
             status="SUCCESS",
             executed_at=datetime.now(timezone.utc) - timedelta(minutes=61),
         )
@@ -260,21 +219,22 @@ class TestCheckActiveCampaigns:
 
         mock_publish_task.delay.assert_called_once()
 
-    async def test_only_one_post_per_campaign_per_cycle(self, db_session, mock_publish_task, mock_session_local):
+    async def test_only_one_group_per_campaign_per_cycle(self, db_session, mock_publish_task, mock_session_local):
         account = AccountFactory.create()
         db_session.add(account)
         await db_session.flush()
 
-        campaign = CampaignFactory.create(account_id=account.id, status="W TOKU")
+        campaign = CampaignFactory.create(account_id=account.id, status="AKTYWNA")
         db_session.add(campaign)
         await db_session.flush()
 
         for i in range(3):
-            group = GroupFactory.create(campaign_id=campaign.id, url=f"https://fb.com/groups/{i}")
+            group = GroupFactory.create(
+                campaign_id=campaign.id,
+                url=f"https://fb.com/groups/{i}",
+                content=f"Content {i}",
+            )
             db_session.add(group)
-        for i in range(3):
-            post = PostFactory.create(campaign_id=campaign.id, content=f"Post {i}")
-            db_session.add(post)
         await db_session.flush()
 
         with patch("app.core.scheduler.AsyncSessionLocal", mock_session_local):
@@ -291,15 +251,17 @@ class TestCheckActiveCampaigns:
 
         for i in range(2):
             campaign = CampaignFactory.create(
-                account_id=account.id, status="W TOKU", name=f"Campaign {i}"
+                account_id=account.id, status="AKTYWNA", name=f"Campaign {i}"
             )
             db_session.add(campaign)
             await db_session.flush()
 
-            group = GroupFactory.create(campaign_id=campaign.id, url=f"https://fb.com/groups/c{i}")
+            group = GroupFactory.create(
+                campaign_id=campaign.id,
+                url=f"https://fb.com/groups/c{i}",
+                content=f"Content {i}",
+            )
             db_session.add(group)
-            post = PostFactory.create(campaign_id=campaign.id, content=f"Content {i}")
-            db_session.add(post)
             await db_session.flush()
 
         with patch("app.core.scheduler.AsyncSessionLocal", mock_session_local):
@@ -310,34 +272,28 @@ class TestCheckActiveCampaigns:
         assert mock_publish_task.delay.call_count == 2
 
     async def test_timezone_naive_log_handled(self, db_session, mock_publish_task, mock_session_local):
-        """Tests lines 86-87: when last_log.executed_at.tzinfo is None."""
+        """Tests when last_log.executed_at.tzinfo is None."""
         account = AccountFactory.create()
         db_session.add(account)
         await db_session.flush()
 
         campaign = CampaignFactory.create(
-            account_id=account.id, status="W TOKU",
+            account_id=account.id, status="AKTYWNA",
             base_interval_minutes=60, random_deviation_percent=0.0,
         )
         db_session.add(campaign)
         await db_session.flush()
 
-        group1 = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/tz1")
-        group2 = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/tz2")
+        group1 = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/tz1", content="TZ Content 1")
+        group2 = GroupFactory.create(campaign_id=campaign.id, url="https://fb.com/groups/tz2", content="TZ Content 2")
         db_session.add(group1)
         db_session.add(group2)
-
-        post1 = PostFactory.create(campaign_id=campaign.id, content="TZ Post 1")
-        post2 = PostFactory.create(campaign_id=campaign.id, content="TZ Post 2")
-        db_session.add(post1)
-        db_session.add(post2)
         await db_session.flush()
 
         # Create a SUCCESS log with timezone-naive datetime (no tzinfo)
         naive_time = datetime(2020, 1, 1, 12, 0, 0)  # no tzinfo
         log = TaskLogFactory.create(
-            post_id=post1.id,
-            group_url="https://fb.com/groups/tz1",
+            group_id=group1.id,
             status="SUCCESS",
             executed_at=naive_time,
         )
@@ -353,19 +309,17 @@ class TestCheckActiveCampaigns:
         # The naive datetime was long ago, so it should dispatch
         mock_publish_task.delay.assert_called_once()
 
-    async def test_oczekuje_campaigns_ignored(self, db_session, mock_publish_task, mock_session_local):
+    async def test_szkic_campaigns_ignored(self, db_session, mock_publish_task, mock_session_local):
         account = AccountFactory.create()
         db_session.add(account)
         await db_session.flush()
 
-        campaign = CampaignFactory.create(account_id=account.id, status="OCZEKUJE")
+        campaign = CampaignFactory.create(account_id=account.id, status="SZKIC")
         db_session.add(campaign)
         await db_session.flush()
 
         group = GroupFactory.create(campaign_id=campaign.id)
         db_session.add(group)
-        post = PostFactory.create(campaign_id=campaign.id)
-        db_session.add(post)
         await db_session.flush()
 
         with patch("app.core.scheduler.AsyncSessionLocal", mock_session_local):
@@ -374,6 +328,74 @@ class TestCheckActiveCampaigns:
                 await check_active_campaigns()
 
         mock_publish_task.delay.assert_not_called()
+
+    async def test_start_at_future_skips_campaign(self, db_session, mock_publish_task, mock_session_local):
+        account = AccountFactory.create()
+        db_session.add(account)
+        await db_session.flush()
+
+        future = datetime.now(timezone.utc) + timedelta(hours=2)
+        campaign = CampaignFactory.create(
+            account_id=account.id, status="AKTYWNA", start_at=future,
+        )
+        db_session.add(campaign)
+        await db_session.flush()
+
+        group = GroupFactory.create(campaign_id=campaign.id)
+        db_session.add(group)
+        await db_session.flush()
+
+        with patch("app.core.scheduler.AsyncSessionLocal", mock_session_local):
+            with patch("app.worker.publish_post_task", mock_publish_task):
+                from app.core.scheduler import check_active_campaigns
+                await check_active_campaigns()
+
+        mock_publish_task.delay.assert_not_called()
+
+    async def test_start_at_past_processes_campaign(self, db_session, mock_publish_task, mock_session_local):
+        account = AccountFactory.create()
+        db_session.add(account)
+        await db_session.flush()
+
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        campaign = CampaignFactory.create(
+            account_id=account.id, status="AKTYWNA", start_at=past,
+        )
+        db_session.add(campaign)
+        await db_session.flush()
+
+        group = GroupFactory.create(campaign_id=campaign.id)
+        db_session.add(group)
+        await db_session.flush()
+
+        with patch("app.core.scheduler.AsyncSessionLocal", mock_session_local):
+            with patch("app.worker.publish_post_task", mock_publish_task):
+                from app.core.scheduler import check_active_campaigns
+                await check_active_campaigns()
+
+        mock_publish_task.delay.assert_called_once()
+
+    async def test_start_at_none_processes_immediately(self, db_session, mock_publish_task, mock_session_local):
+        account = AccountFactory.create()
+        db_session.add(account)
+        await db_session.flush()
+
+        campaign = CampaignFactory.create(
+            account_id=account.id, status="AKTYWNA", start_at=None,
+        )
+        db_session.add(campaign)
+        await db_session.flush()
+
+        group = GroupFactory.create(campaign_id=campaign.id)
+        db_session.add(group)
+        await db_session.flush()
+
+        with patch("app.core.scheduler.AsyncSessionLocal", mock_session_local):
+            with patch("app.worker.publish_post_task", mock_publish_task):
+                from app.core.scheduler import check_active_campaigns
+                await check_active_campaigns()
+
+        mock_publish_task.delay.assert_called_once()
 
 
 class TestRunCampaignScheduler:

@@ -8,11 +8,11 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
       ...options.headers,
     },
   })
-  
+
   if (!response.ok) {
     throw new Error(`API Error: ${response.statusText}`)
   }
-  
+
   return response.json()
 }
 
@@ -20,13 +20,23 @@ export const api = {
   accounts: {
     list: () => fetchApi("/accounts/"),
     create: (data: any) => fetchApi("/accounts/", { method: "POST", body: JSON.stringify(data) }),
+    delete: (id: number) => fetchApi(`/accounts/${id}`, { method: "DELETE" }),
   },
   campaigns: {
     list: () => fetchApi("/campaigns/"),
     create: (data: any) => fetchApi("/campaigns/", { method: "POST", body: JSON.stringify(data) }),
     update: (id: number, data: any) => fetchApi(`/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    groups: (id: number) => fetchApi(`/campaigns/${id}/groups`),
   },
   logs: {
     list: () => fetchApi("/logs/"),
-  }
+  },
+  stats: () => fetchApi("/stats/"),
+  fingerprintTests: {
+    list: () => fetchApi("/fingerprint-tests/"),
+    get: (id: number) => fetchApi(`/fingerprint-tests/${id}`),
+    create: (data: { account_id?: number; visit_external_sites?: boolean }) =>
+      fetchApi("/fingerprint-tests/", { method: "POST", body: JSON.stringify(data) }),
+    delete: (id: number) => fetchApi(`/fingerprint-tests/${id}`, { method: "DELETE" }),
+  },
 }

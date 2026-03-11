@@ -7,9 +7,9 @@ from app.models.schemas import (
     CampaignCreate,
     CampaignResponse,
     CampaignUpdate,
-    PostResponse,
+    GroupInput,
+    GroupResponse,
     TaskLogResponse,
-    UserCreate,
 )
 
 
@@ -53,92 +53,88 @@ class TestCampaignSchemas:
         campaign = CampaignCreate(
             name="Test",
             account_id=1,
-            groups=["https://fb.com/groups/1"],
-            posts=["Hello world"],
+            groups=[GroupInput(url="https://fb.com/groups/1", content="Hello")],
         )
         assert campaign.name == "Test"
         assert campaign.base_interval_minutes == 60
         assert campaign.random_deviation_percent == 10.0
+        assert len(campaign.groups) == 1
+        assert campaign.groups[0].content == "Hello"
 
     def test_campaign_create_custom_interval(self):
         campaign = CampaignCreate(
             name="Test",
             account_id=1,
-            groups=["url"],
-            posts=["content"],
+            groups=[GroupInput(url="url", content="content")],
             base_interval_minutes=30,
             random_deviation_percent=20.0,
         )
         assert campaign.base_interval_minutes == 30
         assert campaign.random_deviation_percent == 20.0
 
+    def test_campaign_create_with_start_at(self):
+        from datetime import datetime, timezone
+        start = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+        campaign = CampaignCreate(
+            name="Test",
+            account_id=1,
+            groups=[GroupInput(url="url", content="content")],
+            start_at=start,
+        )
+        assert campaign.start_at == start
+
     def test_campaign_create_missing_name(self):
         with pytest.raises(ValidationError):
             CampaignCreate(
                 account_id=1,
-                groups=["url"],
-                posts=["content"],
+                groups=[GroupInput(url="url", content="c")],
             )
 
     def test_campaign_create_missing_groups(self):
         with pytest.raises(ValidationError):
-            CampaignCreate(
-                name="Test",
-                account_id=1,
-                posts=["content"],
-            )
-
-    def test_campaign_create_missing_posts(self):
-        with pytest.raises(ValidationError):
-            CampaignCreate(
-                name="Test",
-                account_id=1,
-                groups=["url"],
-            )
+            CampaignCreate(name="Test", account_id=1)
 
     def test_campaign_create_empty_groups_allowed(self):
         campaign = CampaignCreate(
             name="Test",
             account_id=1,
             groups=[],
-            posts=["content"],
         )
         assert campaign.groups == []
 
     def test_campaign_update_valid(self):
-        for status in ["OCZEKUJE", "W TOKU", "OPUBLIKOWANE", "ZATRZYMANE"]:
+        for status in ["SZKIC", "AKTYWNA", "WSTRZYMANA", "ZAKOŃCZONA", "BŁĄD"]:
             update = CampaignUpdate(status=status)
             assert update.status == status
-
-    def test_campaign_update_accepts_any_string(self):
-        update = CampaignUpdate(status="INVALID")
-        assert update.status == "INVALID"
 
     def test_campaign_update_missing_status(self):
         with pytest.raises(ValidationError):
             CampaignUpdate()
 
 
-class TestPostSchemas:
-    def test_post_response_from_attributes(self):
-        class FakePost:
+class TestGroupSchemas:
+    def test_group_input_valid(self):
+        g = GroupInput(url="https://fb.com/groups/1", content="Hello")
+        assert g.url == "https://fb.com/groups/1"
+        assert g.content == "Hello"
+        assert g.media_urls is None
+
+    def test_group_input_with_media(self):
+        g = GroupInput(url="url", content="text", media_urls=["img.jpg"])
+        assert g.media_urls == ["img.jpg"]
+
+    def test_group_response_from_attributes(self):
+        class FakeGroup:
             id = 1
+            url = "https://fb.com/groups/1"
+            name = "Test"
             content = "Hello"
             media_urls = None
+            order = 0
 
-        resp = PostResponse.model_validate(FakePost(), from_attributes=True)
+        resp = GroupResponse.model_validate(FakeGroup(), from_attributes=True)
         assert resp.id == 1
         assert resp.content == "Hello"
-        assert resp.media_urls is None
-
-    def test_post_response_with_media(self):
-        class FakePost:
-            id = 2
-            content = "Post with images"
-            media_urls = ["img1.jpg", "img2.jpg"]
-
-        resp = PostResponse.model_validate(FakePost(), from_attributes=True)
-        assert resp.media_urls == ["img1.jpg", "img2.jpg"]
 
 
 class TestTaskLogSchemas:
@@ -147,40 +143,36 @@ class TestTaskLogSchemas:
 
         class FakeLog:
             id = 1
-            post_id = 10
-            group_url = "https://fb.com/groups/1"
+            group_id = 10
+            campaign_name = "Campaign A"
             status = "SUCCESS"
             error_message = None
             screenshot_path = None
+            planned_at = None
+            retry_count = 0
             executed_at = datetime(2024, 1, 1)
 
         resp = TaskLogResponse.model_validate(FakeLog(), from_attributes=True)
         assert resp.id == 1
         assert resp.status == "SUCCESS"
-        assert resp.error_message is None
+        assert resp.campaign_name == "Campaign A"
+        assert resp.retry_count == 0
 
     def test_task_log_response_with_error(self):
         from datetime import datetime
 
         class FakeLog:
             id = 2
-            post_id = 10
-            group_url = "https://fb.com/groups/1"
+            group_id = 10
+            campaign_name = "Campaign B"
             status = "FAILED"
             error_message = "Connection timeout"
             screenshot_path = "/screenshots/error.png"
+            planned_at = datetime(2024, 1, 1, 10, 0)
+            retry_count = 3
             executed_at = datetime(2024, 1, 1)
 
         resp = TaskLogResponse.model_validate(FakeLog(), from_attributes=True)
         assert resp.error_message == "Connection timeout"
         assert resp.screenshot_path == "/screenshots/error.png"
-
-
-class TestUserSchemas:
-    def test_user_create_valid_email(self):
-        user = UserCreate(email="valid@example.com", password="pass123")
-        assert user.email == "valid@example.com"
-
-    def test_user_create_invalid_email(self):
-        with pytest.raises(ValidationError):
-            UserCreate(email="not-an-email", password="pass123")
+        assert resp.retry_count == 3

@@ -1,4 +1,4 @@
-fastapi>=0.110.0
+fastapi>=0.110.0  # zaktualizuj do aktualnej wersji 0.135.1
 uvicorn[standard]>=0.27.1
 pydantic>=2.7.0
 pydantic-settings>=2.2.1
@@ -7,8 +7,8 @@ alembic>=1.13.1
 asyncpg>=0.29.0
 celery>=5.3.6
 redis>=5.0.3
-playwright>=1.42.0
-playwright-stealth>=1.0.6
+camoufox[geoip]
+python-ghost-cursor
 python-dotenv>=1.0.1
 
 # Test dependencies
