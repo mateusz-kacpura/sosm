@@ -1,0 +1,23 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+markers = [
+    "unit: Unit tests (no DB, no network)",
+    "integration: Integration tests (uses test DB, HTTP client)",
+    "service: Service-level tests (mocked external deps)",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["app"]
+concurrency = ["greenlet", "thread"]
+omit = [
+    "alembic/*",
+]
+
+[tool.coverage.report]
+show_missing = true
