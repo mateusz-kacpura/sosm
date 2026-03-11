@@ -24,7 +24,7 @@ import {
   DialogTitle,
   DialogTrigger
 } from "@/components/ui/dialog"
-import { PlusCircle, Shield, Globe, Mail, Key } from "lucide-react"
+import { PlusCircle, Shield, Globe, Mail, Key, Fingerprint } from "lucide-react"
 import { api } from "@/lib/api"
 
 export default function AccountsPage() {
@@ -36,6 +36,7 @@ export default function AccountsPage() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [proxy, setProxy] = useState("")
+  const [browserProfileId, setBrowserProfileId] = useState("")
 
   async function fetchAccounts() {
     try {
@@ -59,10 +60,12 @@ export default function AccountsPage() {
         fb_email: email,
         fb_password: password,
         proxy_url: proxy || null,
+        browser_profile_id: browserProfileId || null,
       })
       setEmail("")
       setPassword("")
       setProxy("")
+      setBrowserProfileId("")
       setIsDialogOpen(false)
       await fetchAccounts()
     } catch (err: any) {
@@ -143,6 +146,19 @@ export default function AccountsPage() {
                   />
                 </div>
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="browserProfileId">Browser Profile ID (Opcjonalnie)</Label>
+                <div className="relative">
+                  <Fingerprint className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    id="browserProfileId"
+                    placeholder="ID profilu z Donut Browser"
+                    className="pl-10 bg-secondary/50 border-primary/10"
+                    value={browserProfileId}
+                    onChange={(e) => setBrowserProfileId(e.target.value)}
+                  />
+                </div>
+              </div>
               <Button type="submit" className="w-full bg-primary text-primary-foreground">Zapisz Konto</Button>
             </form>
           </DialogContent>
@@ -156,6 +172,7 @@ export default function AccountsPage() {
               <TableRow className="border-primary/10 hover:bg-transparent">
                 <TableHead>Email</TableHead>
                 <TableHead>Proxy</TableHead>
+                <TableHead>Profile ID</TableHead>
                 <TableHead>Data dodania</TableHead>
                 <TableHead className="text-right">Akcje</TableHead>
               </TableRow>
@@ -168,6 +185,7 @@ export default function AccountsPage() {
                     {acc.fb_email}
                   </TableCell>
                   <TableCell className="text-muted-foreground font-mono text-xs">{acc.proxy_url || "Brak"}</TableCell>
+                  <TableCell className="text-muted-foreground font-mono text-xs">{acc.browser_profile_id || "Brak"}</TableCell>
                   <TableCell>{acc.created_at ? new Date(acc.created_at).toLocaleDateString("pl-PL") : "-"}</TableCell>
                   <TableCell className="text-right">
                     <Button
@@ -183,7 +201,7 @@ export default function AccountsPage() {
               ))}
               {accounts.length === 0 && !isLoading && (
                 <TableRow>
-                  <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                  <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
                     Brak kont
                   </TableCell>
                 </TableRow>

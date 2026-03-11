@@ -65,7 +65,10 @@ class TestCheckActiveCampaigns:
         mock_publish_task.delay.assert_not_called()
 
     async def test_first_group_dispatched_immediately(self, db_session, mock_publish_task, mock_session_local):
-        account = AccountFactory.create(fb_email="dispatch@fb.com", fb_password="pass123")
+        account = AccountFactory.create(
+            fb_email="dispatch@fb.com", fb_password="pass123",
+            browser_profile_id="profile_abc", session_cookies_backup={"c_user": "123"},
+        )
         db_session.add(account)
         await db_session.flush()
 
@@ -88,12 +91,14 @@ class TestCheckActiveCampaigns:
 
         mock_publish_task.delay.assert_called_once()
         call_kwargs = mock_publish_task.delay.call_args[1]
+        assert call_kwargs["profile_id"] == "profile_abc"
         assert call_kwargs["account_email"] == "dispatch@fb.com"
         assert call_kwargs["account_pass"] == "pass123"
         assert call_kwargs["group_url"] == "https://fb.com/groups/test"
         assert call_kwargs["post_content"] == "First post!"
         assert call_kwargs["group_id"] == group.id
         assert call_kwargs["campaign_name"] == "Test Camp"
+        assert call_kwargs["backup_cookies"] == {"c_user": "123"}
 
     async def test_successfully_published_group_skipped(self, db_session, mock_publish_task, mock_session_local):
         account = AccountFactory.create()

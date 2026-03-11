@@ -44,28 +44,17 @@ services:
         condition: service_started
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
-  worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: sosm_worker
-    volumes:
-      - ./backend:/app
-    environment:
-      - POSTGRES_HOST=db
-      - REDIS_HOST=redis
-      - PYTHONUNBUFFERED=1
-      # Mesa software rendering (llvmpipe) for WebGL in headless Docker
-      - LIBGL_ALWAYS_SOFTWARE=1
-      - GALLIUM_DRIVER=llvmpipe
-      - MOZ_WEBGL_FORCE_ENABLED=1
-      - MESA_GL_VERSION_OVERRIDE=3.3
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    command: bash -c "pulseaudio --start --exit-idle-time=-1 2>/dev/null; celery -A app.worker.celery_app worker --loglevel=info"
+  # Worker runs on the HOST (not in Docker) because Donut Browser (desktop app)
+  # manages browser profiles natively with GPU access (authentic WebGL rendering).
+  # Start the worker manually on the host:
+  #   cd backend && source venv/bin/activate
+  #   celery -A app.worker.celery_app worker --loglevel=info --concurrency=10
+  #
+  # Required environment variables (in .env or exported):
+  #   POSTGRES_HOST=localhost
+  #   REDIS_HOST=localhost
+  #   DONUT_API_URL=http://127.0.0.1:10108
+  #   DONUT_API_TOKEN=<token-from-donut-browser-settings>
 
   beat:
     build:

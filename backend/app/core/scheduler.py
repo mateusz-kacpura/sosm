@@ -90,13 +90,14 @@ async def check_active_campaigns():
                     if should_publish:
                         logger.info(f"Kolejkowanie postu do grupy: {group.url} (Kampania: {campaign.name})")
                         publish_post_task.delay(
+                            profile_id=account.browser_profile_id,
                             account_email=account.fb_email,
                             account_pass=account.fb_password,
-                            proxy=account.proxy_url,
                             group_url=group.url,
                             post_content=group.content,
                             group_id=group.id,
                             campaign_name=campaign.name,
+                            backup_cookies=account.session_cookies_backup,
                         )
                         # Limit: 1 post per kampanię per cykl
                         break

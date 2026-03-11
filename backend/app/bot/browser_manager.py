@@ -1,77 +1,65 @@
-import os
-import re
+import asyncio
 import logging
-from camoufox.async_api import AsyncCamoufox
-from playwright.async_api import Browser, Page, BrowserContext
 
+import nodriver
+import nodriver.cdp.network
+import nodriver.cdp.page
+import nodriver.cdp.runtime
+
+from app.bot.donut_client import DonutClient
+from app.bot.mouse_engine import reset_cursor
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Maps ANGLE-style "Google Inc. (VENDOR)" to Firefox-native "VENDOR Corporation".
-# Camoufox's WebGL database sometimes picks Chrome/ANGLE entries, which don't match
-# a Firefox User-Agent.  Firefox uses the raw GPU vendor name from the driver.
-_ANGLE_VENDOR_RE = re.compile(r"^Google Inc\.?\s*\((.+?)\)$")
+# Facebook session cookies critical for authentication state.
+# Backed up in our DB to survive cloud sync failures after crashes.
+_SESSION_COOKIE_NAMES = ("c_user", "xs")
 
-# Polyfill for navigator.mediaDevices — Camoufox strips it at C++ level,
-# but real browsers always expose it.  Injected via context.add_init_script().
-_MEDIA_DEVICES_POLYFILL = """(() => {
-    if (typeof navigator.mediaDevices !== 'undefined') return;
-    const md = {
-        enumerateDevices: () => Promise.resolve([
-            {deviceId: 'default', kind: 'audioinput',  label: '', groupId: 'default'},
-            {deviceId: 'default', kind: 'audiooutput', label: '', groupId: 'default'},
-        ]),
-        getUserMedia: () => Promise.reject(
-            new DOMException('NotAllowedError', 'NotAllowedError')
-        ),
-        getSupportedConstraints: () => ({
-            width: true, height: true, aspectRatio: true, frameRate: true,
-            facingMode: true, resizeMode: true, sampleRate: true,
-            sampleSize: true, echoCancellation: true, autoGainControl: true,
-            noiseSuppression: true, latency: true, channelCount: true,
-            deviceId: true, groupId: true,
-        }),
-    };
+# Wayfern on Linux lacks audio/video hardware access, so navigator.mediaDevices
+# is undefined.  Real Chrome always exposes this API even without devices.
+# This polyfill mimics a real PC where the user denied media permissions.
+_BROWSER_POLYFILLS = """
+if (!navigator.mediaDevices) {
     Object.defineProperty(navigator, 'mediaDevices', {
-        value: md, configurable: true, enumerable: true,
+        value: {
+            enumerateDevices: () => Promise.resolve([]),
+            getUserMedia: () => Promise.reject(
+                new DOMException('Permission denied', 'NotAllowedError')
+            ),
+            getSupportedConstraints: () => ({})
+        },
+        writable: false,
+        configurable: true,
+        enumerable: true
     });
-})()"""
-
-# BrowserForge generates ISO 639-3 codes, but real browsers always use ISO 639-1.
-# A 3-letter language code in navigator.language is an immediate detection vector.
-_LANG3_TO_LANG2 = {
-    "tts": "th",  # Northeastern Thai → Thai
-    "mfa": "ms",  # Pattani Malay → Malay
-    "zsm": "ms",  # Standard Malay → Malay
-    "arb": "ar",  # Standard Arabic → Arabic
-    "cmn": "zh",  # Mandarin Chinese → Chinese
-    "swh": "sw",  # Swahili → Swahili
-    "uzn": "uz",  # Northern Uzbek → Uzbek
-    "pes": "fa",  # Iranian Persian → Persian
-    "zlm": "ms",  # Malay (individual) → Malay
-    "khk": "mn",  # Halh Mongolian → Mongolian
-    "lvs": "lv",  # Standard Latvian → Latvian
-    "ekk": "et",  # Standard Estonian → Estonian
-    "nob": "nb",  # Norwegian Bokmål
-    "nno": "nn",  # Norwegian Nynorsk
-    "knn": "kok", # Konkani → Konkani (stays 3-letter, valid in BCP47)
-    "pbu": "ps",  # Northern Pashto → Pashto
-    "ydd": "yi",  # Eastern Yiddish → Yiddish
 }
+if (!navigator.deviceMemory) {
+    Object.defineProperty(navigator, 'deviceMemory', {
+        value: 8,
+        writable: false,
+        configurable: true,
+        enumerable: true
+    });
+}
+"""
+
 
 class BrowserManager:
-    def __init__(self, account_email: str, proxy_url: str = None, session_file: str = None):
-        self.account_email = account_email
-        self.proxy_url = proxy_url
+    """Manages a browser profile lifecycle via Donut Browser + nodriver (CDP).
 
-        # Tworzenie nazwy pliku sesji jeśli nie podano
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        self.session_file = session_file or os.path.join(base_dir, "sessions", f"{account_email}_storage.json")
+    Donut Browser handles: C++ level fingerprint spoofing (Wayfern/Camoufox),
+    BrowserForge statistical profiles, GPU-accelerated WebGL, proxy management.
+    This class handles: connecting to CDP, session cookie backup/restore.
 
-        self._camoufox_cm = None
-        self._browser: Browser = None
-        self._context: BrowserContext = None
+    NOTE: The worker must run on the host (not in Docker) because Donut Browser
+    is a desktop app that needs GPU access for authentic WebGL rendering.
+    """
+
+    def __init__(self, profile_id: str):
+        self.profile_id = profile_id
+        self.client = DonutClient(settings.DONUT_API_URL, settings.DONUT_API_TOKEN)
+        self._browser: nodriver.Browser | None = None
 
     async def __aenter__(self):
         await self.start()
@@ -80,138 +68,118 @@ class BrowserManager:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.stop()
 
-    async def start(self) -> Page:
-        camoufox_kwargs = {
-            "headless": "virtual",
-            "geoip": True,
-            "os": "linux",
-            "block_webgl": False,
-            "i_know_what_im_doing": True,
-            "config": {
-                # Desktop without touchscreen → 0. Value 1 is a known spoofing glitch.
-                "navigator.maxTouchPoints": 0,
-                # Realistic core count for a desktop PC (4-16 is normal consumer range).
-                "navigator.hardwareConcurrency": 8,
-                # DoNotTrack "unspecified" = not set (default for ~99% of users).
-                # BrowserForge sometimes generates "1" which is a fingerprint signal.
-                "navigator.doNotTrack": "unspecified",
-            },
-            "firefox_user_prefs": {
-                # DoNotTrack — only ~1% of real users enable this, making it a fingerprint
-                "privacy.donottrackheader.enabled": False,
-                # Ensure navigator.mediaDevices is available (real browsers always have it).
-                # Camoufox/Firefox may disable this; without it mediaDevices is undefined.
-                "media.navigator.enabled": True,
-                # Provide fake media streams so enumerateDevices() returns realistic
-                # audio/video devices even without real hardware in Docker.
-                "media.navigator.streams.fake": True,
-            },
-        }
+    async def start(self, backup_cookies: dict | None = None):
+        """Start Donut Browser profile and connect via CDP.
 
-        if self.proxy_url:
-            camoufox_kwargs["proxy"] = {"server": self.proxy_url}
+        Args:
+            backup_cookies: Optional ``{name: value}`` dict of Facebook session
+                cookies to restore before navigation (crash protection).
+                Injected via ``Network.setCookies`` before visiting facebook.com.
 
-        self._camoufox_cm = AsyncCamoufox(**camoufox_kwargs)
-        self._browser = await self._camoufox_cm.__aenter__()
+        Returns:
+            nodriver Tab (the active browser tab).
+        """
+        debugger_address = await self.client.start_profile(self.profile_id)
+        host, port = self._parse_debugger_address(debugger_address)
 
-        context_args = {}
-        if os.path.exists(self.session_file):
-            logger.info(f"Wczytywanie sesji z {self.session_file}")
-            context_args["storage_state"] = self.session_file
+        # Poll CDP endpoint until Donut Browser is ready to accept connections.
+        await self._wait_for_cdp(host, port)
 
-        self._context = await self._browser.new_context(**context_args)
+        self._browser = await nodriver.Browser.create(
+            browser_args=["--no-sandbox"],
+            host=host,
+            port=port,
+        )
+        tab = self._browser.main_tab
+        reset_cursor()
 
-        await self._context.add_init_script(_MEDIA_DEVICES_POLYFILL)
+        # Inject mediaDevices polyfill: once on current page, once for future navigations.
+        # Wayfern on Linux doesn't expose navigator.mediaDevices (no audio/video hw).
+        await tab.send(nodriver.cdp.runtime.evaluate(
+            expression=_BROWSER_POLYFILLS,
+        ))
+        await tab.send(nodriver.cdp.page.add_script_to_evaluate_on_new_document(
+            source=_BROWSER_POLYFILLS
+        ))
 
-        page = await self._context.new_page()
+        # Restore session cookies from our DB backup (crash protection).
+        # If Donut Browser's session didn't persist after a worker crash, we inject
+        # c_user + xs BEFORE navigating to facebook.com to avoid checkpoint.
+        if backup_cookies:
+            cookie_params = []
+            for name, value in backup_cookies.items():
+                cookie_params.append(
+                    nodriver.cdp.network.CookieParam(
+                        name=name,
+                        value=value,
+                        domain=".facebook.com",
+                        path="/",
+                    )
+                )
+            await tab.send(nodriver.cdp.network.set_cookies(cookies=cookie_params))
+            logger.info("Restored %d backup cookies for profile %s", len(cookie_params), self.profile_id)
 
-        # --- Fix WebGL vendor if Camoufox picked an ANGLE/Chrome entry ---
-        # Firefox returns raw GPU vendor ("NVIDIA Corporation"), never "Google Inc. (NVIDIA)".
-        # Camoufox patches WebGL at C++ level, but we can override the specific parameters
-        # by closing and re-launching with explicit webgl config values.
-        try:
-            webgl_info = await page.evaluate("""() => {
-                const gl = document.createElement('canvas').getContext('webgl');
-                if (!gl) return null;
-                const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-                if (!dbg) return null;
-                return {
-                    vendor: gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL),
-                    renderer: gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL),
-                };
-            }""")
-            if webgl_info:
-                vendor = webgl_info.get("vendor", "")
-                m = _ANGLE_VENDOR_RE.match(vendor)
-                if m:
-                    native_vendor = m.group(1)
-                    # Add " Corporation" if not already present (e.g. "NVIDIA" → "NVIDIA Corporation")
-                    if not native_vendor.endswith(("Corporation", "Inc.", "Ltd.")):
-                        native_vendor = f"{native_vendor} Corporation"
-                    renderer = webgl_info.get("renderer", "")
-                    logger.info(f"Fixing WebGL vendor: '{vendor}' -> '{native_vendor}'")
-                    # Close everything and re-launch with explicit WebGL config
-                    await page.close()
-                    await self._context.close()
-                    await self._browser.close()
-                    await self._camoufox_cm.__aexit__(None, None, None)
-                    camoufox_kwargs["config"]["webgl:unmaskedVendor"] = native_vendor
-                    camoufox_kwargs["config"]["webgl:unmaskedRenderer"] = renderer
-                    self._camoufox_cm = AsyncCamoufox(**camoufox_kwargs)
-                    self._browser = await self._camoufox_cm.__aenter__()
-                    self._context = await self._browser.new_context(**context_args)
-                    await self._context.add_init_script(_MEDIA_DEVICES_POLYFILL)
-                    page = await self._context.new_page()
-        except Exception as e:
-            logger.warning(f"Nie udalo sie poprawic WebGL vendor: {e}")
+        return tab
 
-        # Fix invalid language codes from BrowserForge (ISO 639-3 → ISO 639-1).
-        # Real browsers always use 2-letter codes; a 3-letter code is detectable.
-        try:
-            lang = await page.evaluate("navigator.language")
-            if lang:
-                primary = lang.split("-")[0].lower()
-                if len(primary) >= 3 and primary in _LANG3_TO_LANG2:
-                    region = lang.split("-")[1] if "-" in lang else ""
-                    correct = _LANG3_TO_LANG2[primary]
-                    fixed_locale = f"{correct}-{region}" if region else correct
-                    logger.info(f"Fixing language: {lang} -> {fixed_locale}")
-                    await page.close()
-                    await self._context.close()
-                    context_args["locale"] = fixed_locale
-                    self._context = await self._browser.new_context(**context_args)
-                    await self._context.add_init_script(_MEDIA_DEVICES_POLYFILL)
-                    page = await self._context.new_page()
-        except Exception as e:
-            logger.warning(f"Nie udalo sie poprawic jezyka: {e}")
+    async def extract_session_cookies(self, tab) -> dict:
+        """Extract critical Facebook cookies via CDP for backup in our DB.
 
-        # Adjust viewport to fit within BrowserForge's spoofed screen dimensions.
-        # In headless mode the default viewport can exceed screen.width,
-        # which is physically impossible on real hardware and a detection vector.
-        try:
-            screen_dims = await page.evaluate("({w: screen.width, h: screen.height})")
-            scr_w = screen_dims.get("w", 1920)
-            scr_h = screen_dims.get("h", 1080)
-            vp_w = max(800, scr_w - 28)
-            vp_h = max(600, scr_h - 85)
-            await page.set_viewport_size({"width": vp_w, "height": vp_h})
-        except Exception as e:
-            logger.warning(f"Nie udalo sie dopasowac viewport do screen: {e}")
-
-        return page
-
-    async def save_session(self):
-        """Zapisuje stan sesji (Local Storage / Ciasteczka) do pliku by ominąć ponowne logowanie"""
-        if self._context:
-            logger.info(f"Zapisywanie stanu sesji do {self.session_file}")
-            os.makedirs(os.path.dirname(self.session_file), exist_ok=True)
-            await self._context.storage_state(path=self.session_file)
+        Returns dict like ``{"c_user": "123456", "xs": "abc..."}``.
+        Should be called after each successful action, before stop().
+        """
+        cookies = await tab.send(nodriver.cdp.network.get_cookies())
+        critical = {}
+        for cookie in cookies:
+            if cookie.name in _SESSION_COOKIE_NAMES:
+                critical[cookie.name] = cookie.value
+        return critical
 
     async def stop(self):
-        if self._context:
-            await self.save_session()
-            await self._context.close()
+        """Disconnect from browser and stop Donut Browser profile."""
         if self._browser:
-            await self._browser.close()
-        if self._camoufox_cm:
-            await self._camoufox_cm.__aexit__(None, None, None)
+            try:
+                self._browser.stop()
+            except Exception as e:
+                logger.warning("Error stopping nodriver browser: %s", e)
+        await self.client.stop_profile(self.profile_id)
+
+    @staticmethod
+    async def _wait_for_cdp(host: str, port: int, timeout: float = 60.0) -> None:
+        """Poll the CDP HTTP endpoint until the browser is stably ready.
+
+        Wayfern briefly exposes the CDP port right after launch, then takes
+        it down for ~30 s while initializing the BrowserForge fingerprint
+        profile.  This method waits for two consecutive successful responses
+        (with a 3 s gap) to avoid connecting during the initial false-ready
+        window.
+        """
+        import httpx
+        url = f"http://{host}:{port}/json/version"
+        deadline = asyncio.get_event_loop().time() + timeout
+        consecutive_ok = 0
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    resp = await client.get(url)
+                    if resp.status_code == 200:
+                        consecutive_ok += 1
+                        if consecutive_ok >= 2:
+                            logger.debug("CDP stable at %s:%d", host, port)
+                            return
+                        # Wait before second check to survive the restart gap.
+                        await asyncio.sleep(3)
+                        continue
+            except (httpx.ConnectError, httpx.ReadTimeout, OSError):
+                consecutive_ok = 0
+            await asyncio.sleep(1)
+        raise RuntimeError(f"CDP endpoint at {host}:{port} not ready after {timeout}s")
+
+    @staticmethod
+    def _parse_debugger_address(address: str) -> tuple[str, int]:
+        """Parse debugger address like ``127.0.0.1:PORT``.
+
+        Returns:
+            Tuple of (host, port).
+        """
+        host, port_str = address.rsplit(":", 1)
+        return host, int(port_str)

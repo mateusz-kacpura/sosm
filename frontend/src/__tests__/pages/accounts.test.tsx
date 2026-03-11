@@ -143,10 +143,11 @@ describe("AccountsPage", () => {
     });
   });
 
-  it("shows 'Brak' for null proxy_url", async () => {
+  it("shows 'Brak' for null fields", async () => {
     render(<AccountsPage />);
     await waitFor(() => {
-      expect(screen.getByText("Brak")).toBeInTheDocument();
+      const brakCells = screen.getAllByText("Brak");
+      expect(brakCells.length).toBeGreaterThanOrEqual(1);
     });
   });
 

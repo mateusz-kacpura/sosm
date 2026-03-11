@@ -14,21 +14,21 @@ def mock_session_local(db_session):
 
 @pytest.fixture
 def mock_browser_setup():
-    mock_page = AsyncMock()
+    mock_tab = AsyncMock()
     mock_manager = AsyncMock()
-    mock_manager.start = AsyncMock(return_value=mock_page)
-    mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
-    mock_manager.__aexit__ = AsyncMock(return_value=False)
-    return mock_page, mock_manager
+    mock_manager.start = AsyncMock(return_value=mock_tab)
+    mock_manager.stop = AsyncMock()
+    mock_manager.extract_session_cookies = AsyncMock(return_value={})
+    return mock_tab, mock_manager
 
 
 class TestRunBotTask:
     async def test_success(self, db_session, mock_session_local, mock_browser_setup):
-        mock_page, mock_manager = mock_browser_setup
+        mock_tab, mock_manager = mock_browser_setup
 
         from tests.factories import AccountFactory, CampaignFactory, GroupFactory
 
-        account = AccountFactory.create()
+        account = AccountFactory.create(browser_profile_id="profile_123")
         db_session.add(account)
         await db_session.flush()
 
@@ -49,7 +49,7 @@ class TestRunBotTask:
                 with patch("app.worker.FBActions", return_value=mock_actions):
                     from app.worker import run_bot_task
                     result = await run_bot_task(
-                        "test@fb.com", "pass", None,
+                        "profile_123", "test@fb.com", "pass",
                         "https://fb.com/groups/1", "Hello", group.id,
                         campaign_name="Test Campaign",
                     )
@@ -59,7 +59,7 @@ class TestRunBotTask:
         mock_actions.publish_on_group.assert_called_once_with("https://fb.com/groups/1", "Hello")
 
     async def test_login_failure(self, db_session, mock_session_local, mock_browser_setup):
-        mock_page, mock_manager = mock_browser_setup
+        mock_tab, mock_manager = mock_browser_setup
 
         from tests.factories import AccountFactory, CampaignFactory, GroupFactory
 
@@ -81,7 +81,7 @@ class TestRunBotTask:
                 with patch("app.worker.FBActions", return_value=mock_actions):
                     from app.worker import run_bot_task
                     result = await run_bot_task(
-                        "test@fb.com", "pass", None,
+                        "profile_123", "test@fb.com", "pass",
                         "https://fb.com/groups/1", "Hello", group.id,
                         campaign_name="Test Campaign",
                     )
@@ -89,7 +89,7 @@ class TestRunBotTask:
         assert result is False
 
     async def test_publish_failure(self, db_session, mock_session_local, mock_browser_setup):
-        mock_page, mock_manager = mock_browser_setup
+        mock_tab, mock_manager = mock_browser_setup
 
         from tests.factories import AccountFactory, CampaignFactory, GroupFactory
 
@@ -112,7 +112,7 @@ class TestRunBotTask:
                 with patch("app.worker.FBActions", return_value=mock_actions):
                     from app.worker import run_bot_task
                     result = await run_bot_task(
-                        "test@fb.com", "pass", None,
+                        "profile_123", "test@fb.com", "pass",
                         "https://fb.com/groups/1", "Hello", group.id,
                         campaign_name="Test Campaign",
                     )
@@ -131,15 +131,15 @@ class TestRunBotTask:
         await db_session.flush()
 
         mock_manager = AsyncMock()
-        mock_manager.__aenter__ = AsyncMock(side_effect=Exception("connection error"))
-        mock_manager.__aexit__ = AsyncMock(return_value=False)
+        mock_manager.start = AsyncMock(side_effect=Exception("connection error"))
+        mock_manager.stop = AsyncMock()
 
         with patch("app.worker.AsyncSessionLocal", mock_session_local):
             with patch("app.worker.BrowserManager", return_value=mock_manager):
                 from app.worker import run_bot_task
                 with pytest.raises(Exception, match="connection error"):
                     await run_bot_task(
-                        "test@fb.com", "pass", None,
+                        "profile_123", "test@fb.com", "pass",
                         "https://fb.com/groups/1", "Hello", group.id,
                         campaign_name="Test Campaign",
                     )
@@ -156,7 +156,7 @@ class TestPublishPostTask:
             with patch("app.worker.asyncio.get_event_loop", return_value=mock_loop):
                 from app.worker import publish_post_task
                 result = publish_post_task.run(
-                    "email@fb.com", "pass", None,
+                    "profile_123", "email@fb.com", "pass",
                     "https://fb.com/groups/1", "Hello", 42,
                     campaign_name="Test Campaign",
                 )
@@ -177,7 +177,7 @@ class TestPublishPostTask:
                     with patch("app.worker.asyncio.set_event_loop"):
                         from app.worker import publish_post_task
                         result = publish_post_task.run(
-                            "email@fb.com", "pass", None,
+                            "profile_123", "email@fb.com", "pass",
                             "https://fb.com/groups/1", "Hello", 42,
                             campaign_name="Test Campaign",
                         )
@@ -197,7 +197,7 @@ class TestPublishPostTask:
                 with patch.object(publish_post_task, "retry", side_effect=Exception("retrying")) as mock_retry:
                     with pytest.raises(Exception, match="retrying"):
                         publish_post_task.run(
-                            "email@fb.com", "pass", None,
+                            "profile_123", "email@fb.com", "pass",
                             "https://fb.com/groups/1", "Hello", 42,
                             campaign_name="Test Campaign",
                         )

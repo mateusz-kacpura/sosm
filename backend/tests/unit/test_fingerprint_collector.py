@@ -177,11 +177,19 @@ class TestAnalyzeFingerprintWarnings:
         result = analyze_fingerprint(data)
         assert result["categories"]["canvas"]["status"] == "warn"
 
-    def test_low_font_count_warns(self):
+    def test_zero_font_count_warns(self):
+        """Zero fonts detected indicates a rendering environment error."""
         data = _make_good_fingerprint()
-        data["fonts"] = {"detected": ["Arial"], "count": 1}
+        data["fonts"] = {"detected": [], "count": 0}
         result = analyze_fingerprint(data)
         assert result["categories"]["fonts"]["status"] == "warn"
+
+    def test_low_font_count_passes(self):
+        """Low font count (e.g. 3) is expected with Camoufox RFP — should NOT warn."""
+        data = _make_good_fingerprint()
+        data["fonts"] = {"detected": ["Arial", "Times New Roman", "Courier New"], "count": 3}
+        result = analyze_fingerprint(data)
+        assert result["categories"]["fonts"]["status"] == "pass"
 
     def test_zero_screen_dimensions_warns(self):
         data = _make_good_fingerprint()
@@ -258,6 +266,22 @@ class TestAnalyzeFingerprintNewVectors:
         result = analyze_fingerprint(data)
         # maxTouchPoints=0 is fine for desktop
         assert not any("maxTouchPoints" in i for i in result["categories"]["navigator"]["issues"])
+
+    def test_ancient_gpu_warns(self):
+        """GPUs from before ~2012 are temporal anomalies with modern browsers."""
+        data = _make_good_fingerprint()
+        data["webgl"]["unmaskedRenderer"] = "Radeon HD 3200 Graphics, or similar"
+        result = analyze_fingerprint(data)
+        assert result["categories"]["webgl"]["status"] == "warn"
+        assert any("przestarzaly" in i for i in result["categories"]["webgl"]["issues"])
+
+    def test_modern_gpu_passes(self):
+        """Modern integrated GPU should not trigger age warning."""
+        data = _make_good_fingerprint()
+        data["webgl"]["unmaskedRenderer"] = "Intel(R) HD Graphics, or similar"
+        data["webgl"]["unmaskedVendor"] = "Intel"
+        result = analyze_fingerprint(data)
+        assert not any("przestarzaly" in i for i in result["categories"]["webgl"]["issues"])
 
 
 class TestAnalyzeFingerprintScoreBounds:

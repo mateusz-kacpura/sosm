@@ -1,117 +1,145 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.bot.browser_manager import BrowserManager
+
+def make_donut_mocks():
+    """Create mock DonutClient and nodriver Browser."""
+    mock_client = AsyncMock()
+    mock_client.start_profile = AsyncMock(return_value="127.0.0.1:12345")
+    mock_client.stop_profile = AsyncMock()
+
+    mock_tab = AsyncMock()
+    mock_tab.send = AsyncMock()
+
+    mock_browser = MagicMock()
+    mock_browser.main_tab = mock_tab
+    mock_browser.stop = MagicMock()
+
+    return mock_client, mock_browser, mock_tab
 
 
-def make_camoufox_mocks():
-    mock_page = AsyncMock()
-    mock_context = AsyncMock()
-    mock_context.new_page = AsyncMock(return_value=mock_page)
-    mock_context.storage_state = AsyncMock()
-    mock_context.close = AsyncMock()
-
-    mock_browser = AsyncMock()
-    mock_browser.new_context = AsyncMock(return_value=mock_context)
-    mock_browser.close = AsyncMock()
-
-    mock_cm = AsyncMock()
-    mock_cm.__aenter__ = AsyncMock(return_value=mock_browser)
-    mock_cm.__aexit__ = AsyncMock(return_value=False)
-
-    return mock_cm, mock_browser, mock_context, mock_page
+# Patch _wait_for_cdp in all tests that call start() — no real CDP in unit tests.
+_PATCH_CDP_WAIT = patch(
+    "app.bot.browser_manager.BrowserManager._wait_for_cdp",
+    new_callable=AsyncMock,
+)
 
 
 class TestBrowserManagerStart:
-    async def test_launches_camoufox(self):
-        mock_cm, mock_browser, mock_context, mock_page = make_camoufox_mocks()
+    async def test_connects_to_donut_profile(self):
+        mock_client, mock_browser, mock_tab = make_donut_mocks()
 
-        with patch("app.bot.browser_manager.AsyncCamoufox", return_value=mock_cm):
-            with patch("app.bot.browser_manager.os.path.exists", return_value=False):
-                manager = BrowserManager("test@fb.com")
-                page = await manager.start()
+        with _PATCH_CDP_WAIT:
+            with patch("app.bot.browser_manager.DonutClient", return_value=mock_client):
+                with patch("app.bot.browser_manager.nodriver.Browser.create", new_callable=AsyncMock, return_value=mock_browser):
+                    from app.bot.browser_manager import BrowserManager
+                    manager = BrowserManager("profile_123")
+                    tab = await manager.start()
 
-        mock_browser.new_context.assert_called_once()
-        mock_context.new_page.assert_called_once()
+        mock_client.start_profile.assert_called_once_with("profile_123")
+        assert tab == mock_tab
 
-    async def test_with_proxy(self):
-        mock_cm, mock_browser, mock_context, mock_page = make_camoufox_mocks()
+    async def test_restores_backup_cookies(self):
+        mock_client, mock_browser, mock_tab = make_donut_mocks()
 
-        with patch("app.bot.browser_manager.AsyncCamoufox", return_value=mock_cm) as mock_camoufox_cls:
-            with patch("app.bot.browser_manager.os.path.exists", return_value=False):
-                manager = BrowserManager("test@fb.com", proxy_url="http://proxy:8080")
-                await manager.start()
+        with _PATCH_CDP_WAIT:
+            with patch("app.bot.browser_manager.DonutClient", return_value=mock_client):
+                with patch("app.bot.browser_manager.nodriver.Browser.create", new_callable=AsyncMock, return_value=mock_browser):
+                    from app.bot.browser_manager import BrowserManager
+                    manager = BrowserManager("profile_123")
+                    backup = {"c_user": "123456", "xs": "abc_token"}
+                    await manager.start(backup_cookies=backup)
 
-        camoufox_kwargs = mock_camoufox_cls.call_args[1]
-        assert camoufox_kwargs["proxy"] == {"server": "http://proxy:8080"}
+        # Network.setCookies should have been called
+        mock_tab.send.assert_called()
 
-    async def test_loads_session_file(self):
-        mock_cm, mock_browser, mock_context, mock_page = make_camoufox_mocks()
+    async def test_no_cookies_without_backup(self):
+        mock_client, mock_browser, mock_tab = make_donut_mocks()
 
-        with patch("app.bot.browser_manager.AsyncCamoufox", return_value=mock_cm):
-            with patch("app.bot.browser_manager.os.path.exists", return_value=True):
-                manager = BrowserManager("test@fb.com", session_file="/tmp/session.json")
-                await manager.start()
+        with _PATCH_CDP_WAIT:
+            with patch("app.bot.browser_manager.DonutClient", return_value=mock_client):
+                with patch("app.bot.browser_manager.nodriver.Browser.create", new_callable=AsyncMock, return_value=mock_browser):
+                    from app.bot.browser_manager import BrowserManager
+                    manager = BrowserManager("profile_123")
+                    await manager.start()
 
-        context_kwargs = mock_browser.new_context.call_args[1]
-        assert context_kwargs["storage_state"] == "/tmp/session.json"
+        # Only the mediaDevices polyfill calls (runtime + page), no cookie restoration
+        assert mock_tab.send.call_count == 2
 
-    async def test_no_session_file(self):
-        mock_cm, mock_browser, mock_context, mock_page = make_camoufox_mocks()
+    async def test_resets_cursor_position(self):
+        mock_client, mock_browser, mock_tab = make_donut_mocks()
 
-        with patch("app.bot.browser_manager.AsyncCamoufox", return_value=mock_cm):
-            with patch("app.bot.browser_manager.os.path.exists", return_value=False):
-                manager = BrowserManager("test@fb.com")
-                await manager.start()
+        with _PATCH_CDP_WAIT:
+            with patch("app.bot.browser_manager.DonutClient", return_value=mock_client):
+                with patch("app.bot.browser_manager.nodriver.Browser.create", new_callable=AsyncMock, return_value=mock_browser):
+                    with patch("app.bot.browser_manager.reset_cursor") as mock_reset:
+                        from app.bot.browser_manager import BrowserManager
+                        manager = BrowserManager("profile_123")
+                        await manager.start()
 
-        context_kwargs = mock_browser.new_context.call_args[1]
-        assert "storage_state" not in context_kwargs
-
-    async def test_headless_and_geoip_enabled(self):
-        mock_cm, mock_browser, mock_context, mock_page = make_camoufox_mocks()
-
-        with patch("app.bot.browser_manager.AsyncCamoufox", return_value=mock_cm) as mock_camoufox_cls:
-            with patch("app.bot.browser_manager.os.path.exists", return_value=False):
-                manager = BrowserManager("test@fb.com")
-                await manager.start()
-
-        camoufox_kwargs = mock_camoufox_cls.call_args[1]
-        assert camoufox_kwargs["headless"] == "virtual"
-        assert camoufox_kwargs["geoip"] is True
-        assert camoufox_kwargs["block_webgl"] is False
-        assert camoufox_kwargs["os"] == "linux"
-        assert camoufox_kwargs["config"]["navigator.maxTouchPoints"] == 0
-        assert camoufox_kwargs["config"]["navigator.hardwareConcurrency"] == 8
+        mock_reset.assert_called_once()
 
 
 class TestBrowserManagerStop:
-    async def test_saves_session_and_closes(self):
-        mock_cm, mock_browser, mock_context, mock_page = make_camoufox_mocks()
+    async def test_stops_browser_and_profile(self):
+        mock_client, mock_browser, mock_tab = make_donut_mocks()
 
-        manager = BrowserManager("test@fb.com")
-        manager._camoufox_cm = mock_cm
+        from app.bot.browser_manager import BrowserManager
+        manager = BrowserManager("profile_123")
+        manager.client = mock_client
         manager._browser = mock_browser
-        manager._context = mock_context
 
-        with patch("app.bot.browser_manager.os.makedirs"):
-            await manager.stop()
+        await manager.stop()
 
-        mock_context.storage_state.assert_called_once()
-        mock_context.close.assert_called_once()
-        mock_browser.close.assert_called_once()
-        mock_cm.__aexit__.assert_called_once()
+        mock_browser.stop.assert_called_once()
+        mock_client.stop_profile.assert_called_once_with("profile_123")
+
+
+class TestBrowserManagerExtractCookies:
+    async def test_extracts_critical_cookies(self):
+        mock_client, mock_browser, mock_tab = make_donut_mocks()
+
+        # Mock CDP response with cookie objects
+        mock_cookie_cuser = MagicMock()
+        mock_cookie_cuser.name = "c_user"
+        mock_cookie_cuser.value = "123456"
+        mock_cookie_xs = MagicMock()
+        mock_cookie_xs.name = "xs"
+        mock_cookie_xs.value = "abc_token"
+        mock_cookie_other = MagicMock()
+        mock_cookie_other.name = "fr"
+        mock_cookie_other.value = "tracking"
+
+        mock_tab.send = AsyncMock(return_value=[mock_cookie_cuser, mock_cookie_xs, mock_cookie_other])
+
+        from app.bot.browser_manager import BrowserManager
+        manager = BrowserManager("profile_123")
+        cookies = await manager.extract_session_cookies(mock_tab)
+
+        assert cookies == {"c_user": "123456", "xs": "abc_token"}
+        assert "fr" not in cookies
 
 
 class TestBrowserManagerContextManager:
     async def test_context_manager_lifecycle(self):
-        mock_cm, mock_browser, mock_context, mock_page = make_camoufox_mocks()
+        mock_client, mock_browser, mock_tab = make_donut_mocks()
 
-        with patch("app.bot.browser_manager.AsyncCamoufox", return_value=mock_cm):
-            with patch("app.bot.browser_manager.os.path.exists", return_value=False):
-                with patch("app.bot.browser_manager.os.makedirs"):
-                    async with BrowserManager("test@fb.com") as manager:
+        with _PATCH_CDP_WAIT:
+            with patch("app.bot.browser_manager.DonutClient", return_value=mock_client):
+                with patch("app.bot.browser_manager.nodriver.Browser.create", new_callable=AsyncMock, return_value=mock_browser):
+                    from app.bot.browser_manager import BrowserManager
+                    async with BrowserManager("profile_123") as manager:
                         assert manager is not None
 
-        # After exiting, stop should have been called
-        mock_context.close.assert_called_once()
-        mock_browser.close.assert_called_once()
+        mock_browser.stop.assert_called_once()
+        mock_client.stop_profile.assert_called_once()
+
+
+class TestBrowserManagerParseDebuggerAddress:
+    def test_parse_address(self):
+        from app.bot.browser_manager import BrowserManager
+        assert BrowserManager._parse_debugger_address("127.0.0.1:12345") == ("127.0.0.1", 12345)
+
+    def test_parse_address_localhost(self):
+        from app.bot.browser_manager import BrowserManager
+        assert BrowserManager._parse_debugger_address("localhost:9222") == ("localhost", 9222)

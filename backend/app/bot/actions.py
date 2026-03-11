@@ -1,109 +1,125 @@
 import logging
 import os
-from playwright.async_api import Page, TimeoutError
 
 from .human_imitation import HumanImitation
 from .checkpoint_detector import CheckpointDetector
+from .dom_walker import DomWalker
+from . import mouse_engine
 
 logger = logging.getLogger(__name__)
 
-from typing import List
 
 class FBActions:
-    """Implementuje docelowe akcje bota na profilu np. Logowanie, Rzucanie posta na grupkę.
-       Wymaga wstrzykniętej podstrony Playwright (Page) stworzonej przez BrowserManager.
+    """Facebook actions (login, publish) using nodriver Tab + CDP mouse engine.
+
+    Requires an active nodriver Tab created by BrowserManager.
     """
 
-    def __init__(self, page: Page, account_email: str):
-        self.page = page
+    def __init__(self, tab, account_email: str):
+        self.tab = tab
         self.account_email = account_email
         self.screenshot_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
-        self.cursor = HumanImitation.create_ghost_cursor(page)
+        self.dom = DomWalker(tab)
 
     async def login(self, password: str) -> bool:
-        """Przeprowadza proces logowania, jeśli ciasteczka/sesja wygasły"""
-        logger.info(f"Rozpoczynam logowanie dla: {self.account_email}")
-        await self.page.goto("https://www.facebook.com/")
+        """Log into Facebook, return True if successful."""
+        logger.info("Rozpoczynam logowanie dla: %s", self.account_email)
+        await self.tab.get("https://www.facebook.com/")
         await HumanImitation.human_delay(2, 5)
 
-        # Sprawdzamy czy już jesteśmy zalogowani po ciasteczkach
-        if await self.page.query_selector("div[aria-label='Facebook']"):
-            logger.info("Sesja już aktywna - omijamy ekran logowania.")
+        # Check if already logged in via cookies
+        logged_in = await self.dom.find("div[aria-label='Facebook']", timeout=3.0)
+        if logged_in:
+            logger.info("Sesja juz aktywna - omijamy ekran logowania.")
             return True
 
-        # Akceptacja cookies
-        try:
-            accept_button = await self.page.wait_for_selector("button[data-cookiebanner='accept_button']", timeout=3000)
-            if accept_button:
-                await self.cursor.click("button[data-cookiebanner='accept_button']")
-                await HumanImitation.human_delay()
-        except TimeoutError:
-            pass  # Nie było ekranu RODO/Cookies
+        # Accept cookie banner
+        accept_btn = await self.dom.find("button[data-cookiebanner='accept_button']", timeout=3.0)
+        if accept_btn:
+            await mouse_engine.click_element(self.tab, accept_btn)
+            await HumanImitation.human_delay()
 
-        # Wpisanie Loginu i Hasła z ruchem kursora do pola
-        logger.info("Wprowadzanie poświadczeń...")
-        await self.cursor.move("input[name='email']")
-        await HumanImitation.type_like_human(self.page, "input[name='email']", self.account_email)
-        await HumanImitation.human_delay()
-        await self.cursor.move("input[name='pass']")
-        await HumanImitation.type_like_human(self.page, "input[name='pass']", password)
+        # Enter email
+        logger.info("Wprowadzanie poswiadczen...")
+        email_field = await self.dom.find("input[name='email']")
+        if email_field:
+            await mouse_engine.click_element(self.tab, email_field)
+            await HumanImitation.type_like_human(self.tab, self.account_email)
+            await HumanImitation.human_delay()
 
-        # Kliknięcie "Zaloguj" z Ghost Cursor (ruch po krzywej Béziera + klik)
-        await self.cursor.click("button[name='login']")
+        # Enter password
+        pass_field = await self.dom.find("input[name='pass']")
+        if pass_field:
+            await mouse_engine.click_element(self.tab, pass_field)
+            await HumanImitation.type_like_human(self.tab, password)
+
+        # Click login button
+        login_btn = await self.dom.find("button[name='login']")
+        if login_btn:
+            await mouse_engine.click_element(self.tab, login_btn)
 
         await HumanImitation.human_delay(4, 7)
 
-        # Weryfikacja czy zostaliśmy wpuszczeni czy wyrzuceni na checkpoint
-        if await CheckpointDetector.handle_checkpoint_if_needed(self.page, self.screenshot_dir, self.account_email):
+        # Check for checkpoint/block
+        if await CheckpointDetector.handle_checkpoint_if_needed(self.tab, self.screenshot_dir, self.account_email):
             logger.error("Logowanie zablokowane - Checkpoint!")
             return False
 
-        logger.info("Pomyślnie zalogowano lub ominięto checkpointy.")
+        logger.info("Pomyslnie zalogowano lub ominieto checkpointy.")
         return True
 
-    async def publish_on_group(self, group_url: str, text: str, media_urls: List[str] = None) -> bool:
-        """Publikuje post do podlinkowanej grupy z tekstową zawartością"""
-        logger.info(f"Nawigacja do grupy: {group_url}")
+    async def publish_on_group(self, group_url: str, text: str, media_urls=None) -> bool:
+        """Publish a text post to a Facebook group."""
+        logger.info("Nawigacja do grupy: %s", group_url)
 
-        await self.page.goto(group_url, wait_until="domcontentloaded")
+        await self.tab.get(group_url)
         await HumanImitation.human_delay(3, 6)
 
-        if await CheckpointDetector.handle_checkpoint_if_needed(self.page, self.screenshot_dir, self.account_email):
+        if await CheckpointDetector.handle_checkpoint_if_needed(self.tab, self.screenshot_dir, self.account_email):
             return False
 
-        await HumanImitation.natural_scroll(self.page, scrolls=2)
+        await HumanImitation.natural_scroll(self.tab, scrolls=2)
 
         try:
-            # Selektory FB czesto się zmieniają - szukamy pola 'Utwórz publiczny post', 'Napisz coś...', etc.
-            post_box_selector = "div[role='button']:has-text('Napisz coś'), div[role='button']:has-text('Utwórz publiczny post')"
-            await self.page.wait_for_selector(post_box_selector, timeout=15000)
-            await self.cursor.click(post_box_selector)
+            # Find the "Write something" / "Create public post" button
+            post_box = await self.dom.find_text("Napisz cos", tag="div[role='button']", timeout=15.0)
+            if not post_box:
+                post_box = await self.dom.find_text("Utwórz publiczny post", tag="div[role='button']", timeout=5.0)
+            if not post_box:
+                raise TimeoutError("Nie znaleziono pola do tworzenia postu")
 
+            await mouse_engine.click_element(self.tab, post_box)
             await HumanImitation.human_delay()
 
-            # Modal się pojawił - szukamy pola tekstowego
-            editor_selector = "div[role='textbox'][contenteditable='true']"
-            await self.page.wait_for_selector(editor_selector)
-            await self.cursor.click(editor_selector)
-            await HumanImitation.type_like_human(self.page, editor_selector, text, delay_range=(0.02, 0.08))
+            # Find the text editor in the modal
+            editor = await self.dom.find("div[role='textbox'][contenteditable='true']")
+            if not editor:
+                raise TimeoutError("Nie znaleziono edytora tekstowego")
+
+            await mouse_engine.click_element(self.tab, editor)
+            await HumanImitation.type_like_human(self.tab, text, delay_range=(0.02, 0.08))
 
             if media_urls:
-                logger.info("TODO: Dodawanie zdjęć nieobsługiwane w pierwszym MVP")
+                logger.info("TODO: Dodawanie zdjec nieobslugiwane w pierwszym MVP")
 
             await HumanImitation.human_delay(2, 4)
 
-            # Wciśnij Opublikuj
-            publish_selector = "div[aria-label='Opublikuj'], button:has-text('Opublikuj')"
-            await self.page.wait_for_selector(publish_selector, state="visible")
-            await self.cursor.click(publish_selector)
+            # Click Publish button
+            publish_btn = await self.dom.find_text("Opublikuj", timeout=5.0)
+            if not publish_btn:
+                raise TimeoutError("Nie znaleziono przycisku Opublikuj")
 
-            # Okienko może jeszcze chwilę wisieć po wysłaniu pakietu POST do GraphAPI FB
+            await mouse_engine.click_element(self.tab, publish_btn)
+
             await HumanImitation.human_delay(5, 8)
 
-            logger.info("Sukces: Post opublikowany (lub wysłany do akceptacji admina)")
+            logger.info("Sukces: Post opublikowany (lub wyslany do akceptacji admina)")
             return True
 
-        except TimeoutError:
-            logger.error("Nie znaleziono pola tekstowego na grupie (brak uprawnień lub nowy UI / blokada)")
-            await self.page.screenshot(path=os.path.join(self.screenshot_dir, f"error_group_{self.account_email}.png"))
+        except (TimeoutError, Exception) as e:
+            logger.error("Nie znaleziono pola tekstowego na grupie: %s", e)
+            os.makedirs(self.screenshot_dir, exist_ok=True)
+            await self.tab.save_screenshot(
+                os.path.join(self.screenshot_dir, f"error_group_{self.account_email}.png")
+            )
             return False

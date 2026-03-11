@@ -35,19 +35,26 @@ from app.bot.fingerprint_collector import collect_fingerprint, analyze_fingerpri
 
 logger = logging.getLogger(__name__)
 
-# Retry countdown wg dokumentacji: próba 2 → 5s, próba 3 → 10s, próba 4 → 20s
+# Retry countdown: attempt 2 → 5s, attempt 3 → 10s, attempt 4 → 20s
 RETRY_COUNTDOWNS = [5, 10, 20]
 
 
-async def run_bot_task(account_email: str, account_pass: str, proxy: str,
+async def run_bot_task(profile_id: str, account_email: str, account_pass: str,
                        group_url: str, post_content: str, group_id: int,
-                       campaign_name: str = ""):
-    """Asynchroniczna funkcja wywoływana przez Celery w nowym event loopie."""
+                       campaign_name: str = "",
+                       backup_cookies: dict = None):
+    """Async function invoked by Celery in a new event loop.
+
+    Connects to Donut Browser profile via nodriver (CDP), performs login + publish.
+    After success, extracts session cookies for backup in our DB.
+    """
     async with AsyncSessionLocal() as db:
         try:
-            async with BrowserManager(account_email, proxy) as manager:
-                page = await manager.start()
-                actions = FBActions(page, account_email)
+            manager = BrowserManager(profile_id)
+            tab = await manager.start(backup_cookies=backup_cookies)
+
+            try:
+                actions = FBActions(tab, account_email)
 
                 is_logged = await actions.login(account_pass)
                 if not is_logged:
@@ -63,7 +70,17 @@ async def run_bot_task(account_email: str, account_pass: str, proxy: str,
 
                 success = await actions.publish_on_group(group_url, post_content)
                 status = "SUCCESS" if success else "FAILED"
-                error_msg = None if success else "Błąd publikacji / brak uprawnień na grupie"
+                error_msg = None if success else "Blad publikacji / brak uprawnien na grupie"
+
+                # Backup critical Facebook session cookies to our DB
+                cookies = await manager.extract_session_cookies(tab)
+                if cookies:
+                    result = await db.execute(
+                        select(Account).where(Account.browser_profile_id == profile_id)
+                    )
+                    account = result.scalars().first()
+                    if account:
+                        account.session_cookies_backup = cookies
 
                 task_log = TaskLog(
                     group_id=group_id,
@@ -75,6 +92,9 @@ async def run_bot_task(account_email: str, account_pass: str, proxy: str,
                 await db.commit()
 
                 return success
+            finally:
+                await manager.stop()
+
         except Exception as e:
             task_log = TaskLog(
                 group_id=group_id,
@@ -89,7 +109,7 @@ async def run_bot_task(account_email: str, account_pass: str, proxy: str,
 
 @celery_app.task(name="app.worker.check_campaigns_task")
 def check_campaigns_task():
-    """Wyzwalane przez Celery Beat co minutę."""
+    """Triggered by Celery Beat every minute."""
     from app.core.scheduler import run_campaign_scheduler
     run_campaign_scheduler()
 
@@ -99,10 +119,11 @@ def check_campaigns_task():
     bind=True,
     max_retries=3,
 )
-def publish_post_task(self, account_email: str, account_pass: str, proxy: str,
+def publish_post_task(self, profile_id: str, account_email: str, account_pass: str,
                       group_url: str, post_content: str, group_id: int,
-                      campaign_name: str = ""):
-    """Synchroniczna delegacja do asynchronicznego kodu Playwrighta."""
+                      campaign_name: str = "",
+                      backup_cookies: dict = None):
+    """Sync Celery entry point — delegates to async nodriver code."""
     loop = asyncio.get_event_loop()
     if loop.is_closed():
         loop = asyncio.new_event_loop()
@@ -110,8 +131,9 @@ def publish_post_task(self, account_email: str, account_pass: str, proxy: str,
 
     try:
         return loop.run_until_complete(
-            run_bot_task(account_email, account_pass, proxy, group_url,
-                         post_content, group_id, campaign_name)
+            run_bot_task(profile_id, account_email, account_pass,
+                         group_url, post_content, group_id, campaign_name,
+                         backup_cookies)
         )
     except Exception as exc:
         retry_num = self.request.retries
@@ -119,9 +141,9 @@ def publish_post_task(self, account_email: str, account_pass: str, proxy: str,
         raise self.retry(exc=exc, countdown=countdown)
 
 
-async def run_fingerprint_collection(test_id: int, proxy_url: str = None,
+async def run_fingerprint_collection(test_id: int, profile_id: str = None,
                                       visit_external_sites: bool = False):
-    """Async: launch Camoufox, collect fingerprint, analyze, store results."""
+    """Async: connect to Donut Browser profile, collect fingerprint, analyze, store results."""
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(FingerprintTest).where(FingerprintTest.id == test_id)
@@ -133,11 +155,15 @@ async def run_fingerprint_collection(test_id: int, proxy_url: str = None,
         fp_test.status = "RUNNING"
         await db.commit()
 
-        try:
-            async with BrowserManager("fingerprint_test", proxy_url) as manager:
-                page = await manager.start()
+        # Use a dedicated fingerprint test profile if provided
+        fp_profile_id = profile_id or settings.FINGERPRINT_PROFILE_ID
 
-                raw_data = await collect_fingerprint(page)
+        try:
+            manager = BrowserManager(fp_profile_id)
+            tab = await manager.start()
+
+            try:
+                raw_data = await collect_fingerprint(tab)
                 analysis = analyze_fingerprint(raw_data)
 
                 results = {
@@ -154,10 +180,10 @@ async def run_fingerprint_collection(test_id: int, proxy_url: str = None,
                     ]
                     for site_key, url in external_sites:
                         try:
-                            await page.goto(url, wait_until="networkidle", timeout=30000)
-                            await asyncio.sleep(5)
+                            await tab.get(url)
+                            await asyncio.sleep(8)
                             screenshot_path = f"/app/screenshots/fp_{test_id}_{site_key}.png"
-                            await page.screenshot(path=screenshot_path, full_page=True)
+                            await tab.save_screenshot(screenshot_path)
                             results["external_sites"][site_key] = {
                                 "url": url,
                                 "screenshot_path": screenshot_path,
@@ -169,6 +195,8 @@ async def run_fingerprint_collection(test_id: int, proxy_url: str = None,
                                 "visited": False,
                                 "error": str(site_err),
                             }
+            finally:
+                await manager.stop()
 
             fp_test.results = results
             fp_test.status = "COMPLETED"
@@ -184,7 +212,7 @@ async def run_fingerprint_collection(test_id: int, proxy_url: str = None,
 
 
 @celery_app.task(name="app.worker.run_fingerprint_test_task")
-def run_fingerprint_test_task(test_id: int, proxy_url: str = None,
+def run_fingerprint_test_task(test_id: int, profile_id: str = None,
                                visit_external_sites: bool = False):
     """Sync Celery entry point for fingerprint test."""
     loop = asyncio.get_event_loop()
@@ -193,5 +221,5 @@ def run_fingerprint_test_task(test_id: int, proxy_url: str = None,
         asyncio.set_event_loop(loop)
 
     loop.run_until_complete(
-        run_fingerprint_collection(test_id, proxy_url, visit_external_sites)
+        run_fingerprint_collection(test_id, profile_id, visit_external_sites)
     )

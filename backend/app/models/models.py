@@ -12,6 +12,8 @@ class Account(Base):
     fb_password = Column(String, nullable=False)
     proxy_url = Column(String, nullable=True)
     session_file_path = Column(String, nullable=True)
+    browser_profile_id = Column(String, nullable=True)
+    session_cookies_backup = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     campaigns = relationship("Campaign", back_populates="account")

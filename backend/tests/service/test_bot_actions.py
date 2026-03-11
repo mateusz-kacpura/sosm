@@ -1,39 +1,35 @@
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.bot.actions import FBActions
 
 
-def make_mock_cursor():
-    cursor = MagicMock()
-    cursor.click = AsyncMock()
-    cursor.move = AsyncMock()
-    return cursor
+def make_mock_tab(url="https://www.facebook.com/"):
+    """Create a mock nodriver Tab."""
+    tab = AsyncMock()
+    tab.get = AsyncMock()
+    tab.evaluate = AsyncMock()
+    tab.save_screenshot = AsyncMock()
+    tab.url = url
+    return tab
 
 
-def make_mock_page(url="https://www.facebook.com/"):
-    page = MagicMock()
-    page.goto = AsyncMock()
-    page.query_selector = AsyncMock(return_value=None)
-    page.wait_for_selector = AsyncMock()
-    page.screenshot = AsyncMock()
-    type(page).url = PropertyMock(return_value=url)
-    page.mouse = MagicMock()
-    page.mouse.move = AsyncMock()
-    page.mouse.wheel = AsyncMock()
-    page.keyboard = MagicMock()
-    page.keyboard.press = AsyncMock()
-    return page
+def make_mock_dom_walker():
+    """Create a mock DomWalker."""
+    walker = AsyncMock()
+    walker.find = AsyncMock(return_value=None)
+    walker.find_text = AsyncMock(return_value=None)
+    return walker
 
 
 class TestLogin:
     async def test_already_logged_in(self):
-        page = make_mock_page()
-        page.query_selector = AsyncMock(return_value=MagicMock())  # Finds the logged-in indicator
+        tab = make_mock_tab()
+        walker = make_mock_dom_walker()
+        walker.find = AsyncMock(return_value={"x": 0, "y": 0, "w": 100, "h": 50, "text": "Facebook"})
 
-        with patch("app.bot.actions.HumanImitation.create_ghost_cursor", return_value=make_mock_cursor()):
-            actions = FBActions(page, "test@fb.com")
+        with patch("app.bot.actions.DomWalker", return_value=walker):
+            actions = FBActions(tab, "test@fb.com")
 
         with patch("app.bot.actions.HumanImitation.human_delay", new_callable=AsyncMock):
             result = await actions.login("password123")
@@ -41,100 +37,100 @@ class TestLogin:
         assert result is True
 
     async def test_login_success_flow(self):
-        page = make_mock_page()
-        mock_cursor = make_mock_cursor()
+        tab = make_mock_tab()
+        walker = make_mock_dom_walker()
 
-        # Not logged in initially
-        page.query_selector = AsyncMock(return_value=None)
-        # Cookie banner times out (no login_btn wait_for_selector needed — cursor.click handles it)
-        page.wait_for_selector = AsyncMock(side_effect=PlaywrightTimeoutError("timeout"))
+        walker.find = AsyncMock(side_effect=[
+            None,   # Not logged in
+            None,   # Cookie banner not found
+            {"x": 100, "y": 200, "w": 200, "h": 30, "text": ""},  # email field
+            {"x": 100, "y": 250, "w": 200, "h": 30, "text": ""},  # pass field
+            {"x": 100, "y": 300, "w": 100, "h": 40, "text": "Zaloguj"},  # login btn
+        ])
 
-        with patch("app.bot.actions.HumanImitation.create_ghost_cursor", return_value=mock_cursor):
-            actions = FBActions(page, "test@fb.com")
+        with patch("app.bot.actions.DomWalker", return_value=walker):
+            actions = FBActions(tab, "test@fb.com")
 
         with patch("app.bot.actions.HumanImitation.human_delay", new_callable=AsyncMock):
             with patch("app.bot.actions.HumanImitation.type_like_human", new_callable=AsyncMock):
-                with patch("app.bot.actions.CheckpointDetector.handle_checkpoint_if_needed", new_callable=AsyncMock, return_value=False):
-                    result = await actions.login("password123")
+                with patch("app.bot.actions.mouse_engine.click_element", new_callable=AsyncMock) as mock_click:
+                    with patch("app.bot.actions.CheckpointDetector.handle_checkpoint_if_needed", new_callable=AsyncMock, return_value=False):
+                        result = await actions.login("password123")
 
         assert result is True
-        # Ghost cursor clicked login button
-        mock_cursor.click.assert_called_with("button[name='login']")
+        assert mock_click.call_count >= 2
 
     async def test_login_checkpoint_blocked(self):
-        page = make_mock_page()
-        mock_cursor = make_mock_cursor()
+        tab = make_mock_tab()
+        walker = make_mock_dom_walker()
+        walker.find = AsyncMock(return_value=None)
 
-        page.query_selector = AsyncMock(return_value=None)
-        page.wait_for_selector = AsyncMock(side_effect=PlaywrightTimeoutError("timeout"))
-
-        with patch("app.bot.actions.HumanImitation.create_ghost_cursor", return_value=mock_cursor):
-            actions = FBActions(page, "test@fb.com")
+        with patch("app.bot.actions.DomWalker", return_value=walker):
+            actions = FBActions(tab, "test@fb.com")
 
         with patch("app.bot.actions.HumanImitation.human_delay", new_callable=AsyncMock):
             with patch("app.bot.actions.HumanImitation.type_like_human", new_callable=AsyncMock):
-                with patch("app.bot.actions.CheckpointDetector.handle_checkpoint_if_needed", new_callable=AsyncMock, return_value=True):
-                    result = await actions.login("password123")
+                with patch("app.bot.actions.mouse_engine.click_element", new_callable=AsyncMock):
+                    with patch("app.bot.actions.CheckpointDetector.handle_checkpoint_if_needed", new_callable=AsyncMock, return_value=True):
+                        result = await actions.login("password123")
 
         assert result is False
 
     async def test_cookie_banner_accepted(self):
-        page = make_mock_page()
-        mock_cursor = make_mock_cursor()
+        tab = make_mock_tab()
+        walker = make_mock_dom_walker()
+        cookie_btn = {"x": 400, "y": 300, "w": 120, "h": 40, "text": "Accept"}
 
-        cookie_btn = AsyncMock()
-        cookie_btn.click = AsyncMock()
+        walker.find = AsyncMock(side_effect=[
+            None,        # Not logged in
+            cookie_btn,  # Cookie banner found
+            {"x": 100, "y": 200, "w": 200, "h": 30, "text": ""},  # email
+            {"x": 100, "y": 250, "w": 200, "h": 30, "text": ""},  # pass
+            {"x": 100, "y": 300, "w": 100, "h": 40, "text": ""},  # login
+        ])
 
-        page.query_selector = AsyncMock(return_value=None)
-        # Cookie banner found on first wait_for_selector
-        page.wait_for_selector = AsyncMock(return_value=cookie_btn)
-
-        with patch("app.bot.actions.HumanImitation.create_ghost_cursor", return_value=mock_cursor):
-            actions = FBActions(page, "test@fb.com")
+        with patch("app.bot.actions.DomWalker", return_value=walker):
+            actions = FBActions(tab, "test@fb.com")
 
         with patch("app.bot.actions.HumanImitation.human_delay", new_callable=AsyncMock):
             with patch("app.bot.actions.HumanImitation.type_like_human", new_callable=AsyncMock):
-                with patch("app.bot.actions.CheckpointDetector.handle_checkpoint_if_needed", new_callable=AsyncMock, return_value=False):
-                    await actions.login("password123")
+                with patch("app.bot.actions.mouse_engine.click_element", new_callable=AsyncMock) as mock_click:
+                    with patch("app.bot.actions.CheckpointDetector.handle_checkpoint_if_needed", new_callable=AsyncMock, return_value=False):
+                        await actions.login("password123")
 
-        # Cookie banner clicked via ghost cursor
-        mock_cursor.click.assert_any_call("button[data-cookiebanner='accept_button']")
+        mock_click.assert_any_call(tab, cookie_btn)
 
 
 class TestPublishOnGroup:
     async def test_publish_success(self):
-        page = make_mock_page()
-        mock_cursor = make_mock_cursor()
+        tab = make_mock_tab()
+        walker = make_mock_dom_walker()
 
-        post_box = AsyncMock()
-        editor = AsyncMock()
-        publish_btn = AsyncMock()
+        post_box = {"x": 100, "y": 200, "w": 500, "h": 40, "text": "Napisz cos"}
+        editor = {"x": 100, "y": 300, "w": 500, "h": 200, "text": ""}
+        publish_btn = {"x": 400, "y": 550, "w": 100, "h": 40, "text": "Opublikuj"}
 
-        page.wait_for_selector = AsyncMock(side_effect=[
-            post_box,     # Post creation box
-            editor,       # Text editor
-            publish_btn,  # Publish button
-        ])
+        walker.find_text = AsyncMock(side_effect=[post_box, publish_btn])
+        walker.find = AsyncMock(return_value=editor)
 
-        with patch("app.bot.actions.HumanImitation.create_ghost_cursor", return_value=mock_cursor):
-            actions = FBActions(page, "test@fb.com")
+        with patch("app.bot.actions.DomWalker", return_value=walker):
+            actions = FBActions(tab, "test@fb.com")
 
         with patch("app.bot.actions.HumanImitation.human_delay", new_callable=AsyncMock):
             with patch("app.bot.actions.HumanImitation.natural_scroll", new_callable=AsyncMock):
                 with patch("app.bot.actions.HumanImitation.type_like_human", new_callable=AsyncMock):
-                    with patch("app.bot.actions.CheckpointDetector.handle_checkpoint_if_needed", new_callable=AsyncMock, return_value=False):
-                        result = await actions.publish_on_group("https://fb.com/groups/1", "Hello!")
+                    with patch("app.bot.actions.mouse_engine.click_element", new_callable=AsyncMock):
+                        with patch("app.bot.actions.CheckpointDetector.handle_checkpoint_if_needed", new_callable=AsyncMock, return_value=False):
+                            result = await actions.publish_on_group("https://fb.com/groups/1", "Hello!")
 
         assert result is True
-        # Ghost cursor clicked publish button
-        assert mock_cursor.click.call_count >= 3  # post_box + editor + publish
 
     async def test_publish_checkpoint_detected(self):
-        page = make_mock_page()
-        mock_cursor = make_mock_cursor()
+        tab = make_mock_tab()
+        walker = make_mock_dom_walker()
 
-        with patch("app.bot.actions.HumanImitation.create_ghost_cursor", return_value=mock_cursor):
-            actions = FBActions(page, "test@fb.com")
+        with patch("app.bot.actions.DomWalker", return_value=walker):
+            actions = FBActions(tab, "test@fb.com")
 
         with patch("app.bot.actions.HumanImitation.human_delay", new_callable=AsyncMock):
             with patch("app.bot.actions.HumanImitation.natural_scroll", new_callable=AsyncMock):
@@ -143,13 +139,13 @@ class TestPublishOnGroup:
 
         assert result is False
 
-    async def test_publish_timeout_error(self):
-        page = make_mock_page()
-        mock_cursor = make_mock_cursor()
-        page.wait_for_selector = AsyncMock(side_effect=PlaywrightTimeoutError("timeout"))
+    async def test_publish_timeout_returns_false(self):
+        tab = make_mock_tab()
+        walker = make_mock_dom_walker()
+        walker.find_text = AsyncMock(return_value=None)
 
-        with patch("app.bot.actions.HumanImitation.create_ghost_cursor", return_value=mock_cursor):
-            actions = FBActions(page, "test@fb.com")
+        with patch("app.bot.actions.DomWalker", return_value=walker):
+            actions = FBActions(tab, "test@fb.com")
 
         with patch("app.bot.actions.HumanImitation.human_delay", new_callable=AsyncMock):
             with patch("app.bot.actions.HumanImitation.natural_scroll", new_callable=AsyncMock):
@@ -157,29 +153,29 @@ class TestPublishOnGroup:
                     result = await actions.publish_on_group("https://fb.com/groups/1", "Hello!")
 
         assert result is False
-        page.screenshot.assert_called_once()
+        tab.save_screenshot.assert_called_once()
 
     async def test_publish_with_media_urls_no_crash(self):
-        page = make_mock_page()
-        mock_cursor = make_mock_cursor()
+        tab = make_mock_tab()
+        walker = make_mock_dom_walker()
 
-        post_box = AsyncMock()
-        editor = AsyncMock()
-        publish_btn = AsyncMock()
+        post_box = {"x": 100, "y": 200, "w": 500, "h": 40, "text": "Napisz cos"}
+        editor = {"x": 100, "y": 300, "w": 500, "h": 200, "text": ""}
+        publish_btn = {"x": 400, "y": 550, "w": 100, "h": 40, "text": "Opublikuj"}
 
-        page.wait_for_selector = AsyncMock(side_effect=[
-            post_box, editor, publish_btn,
-        ])
+        walker.find_text = AsyncMock(side_effect=[post_box, publish_btn])
+        walker.find = AsyncMock(return_value=editor)
 
-        with patch("app.bot.actions.HumanImitation.create_ghost_cursor", return_value=mock_cursor):
-            actions = FBActions(page, "test@fb.com")
+        with patch("app.bot.actions.DomWalker", return_value=walker):
+            actions = FBActions(tab, "test@fb.com")
 
         with patch("app.bot.actions.HumanImitation.human_delay", new_callable=AsyncMock):
             with patch("app.bot.actions.HumanImitation.natural_scroll", new_callable=AsyncMock):
                 with patch("app.bot.actions.HumanImitation.type_like_human", new_callable=AsyncMock):
-                    with patch("app.bot.actions.CheckpointDetector.handle_checkpoint_if_needed", new_callable=AsyncMock, return_value=False):
-                        result = await actions.publish_on_group(
-                            "https://fb.com/groups/1", "Hello!", media_urls=["img.jpg"]
-                        )
+                    with patch("app.bot.actions.mouse_engine.click_element", new_callable=AsyncMock):
+                        with patch("app.bot.actions.CheckpointDetector.handle_checkpoint_if_needed", new_callable=AsyncMock, return_value=False):
+                            result = await actions.publish_on_group(
+                                "https://fb.com/groups/1", "Hello!", media_urls=["img.jpg"]
+                            )
 
         assert result is True

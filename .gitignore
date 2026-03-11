@@ -26,6 +26,10 @@ htmlcov/
 celerybeat-schedule
 celerybeat-schedule.db
 
+# Runtime data
+backend/screenshots/
+backend/app/bot/sessions/
+
 # OS
 .DS_Store
 Thumbs.db

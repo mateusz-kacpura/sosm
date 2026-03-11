@@ -7,6 +7,7 @@ from datetime import datetime
 class AccountBase(BaseModel):
     fb_email: str
     proxy_url: Optional[str] = None
+    browser_profile_id: Optional[str] = None
 
 class AccountCreate(AccountBase):
     fb_password: str

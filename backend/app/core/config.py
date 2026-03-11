@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     # Redis configuration
     REDIS_HOST: str = "localhost"
     REDIS_PORT: str = "6379"
+
+    # Donut Browser Local API (enable in Settings, copy Bearer token)
+    DONUT_API_URL: str = "http://127.0.0.1:10108"
+    DONUT_API_TOKEN: str = ""
+    FINGERPRINT_PROFILE_ID: str = ""
+    BROWSER_CONCURRENCY: int = 10
     
     @property
     def REDIS_URL(self) -> str:

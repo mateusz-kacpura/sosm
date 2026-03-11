@@ -4,42 +4,25 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.bot.human_imitation import HumanImitation
 
 
-class TestCreateGhostCursor:
-    def test_creates_cursor_for_page(self):
-        page = MagicMock()
-        with patch("app.bot.human_imitation.create_cursor") as mock_create:
-            mock_create.return_value = MagicMock()
-            cursor = HumanImitation.create_ghost_cursor(page)
-            mock_create.assert_called_once_with(page)
-            assert cursor is not None
-
-
 class TestTypeLikeHuman:
     async def test_types_each_character(self):
-        page = MagicMock()
-        element = AsyncMock()
-        page.wait_for_selector = AsyncMock(return_value=element)
-        page.keyboard = MagicMock()
-        page.keyboard.press = AsyncMock()
+        tab = AsyncMock()
+        tab.send = AsyncMock()
 
         with patch("app.bot.human_imitation.asyncio.sleep", new_callable=AsyncMock):
-            await HumanImitation.type_like_human(page, "#input", "abc")
+            await HumanImitation.type_like_human(tab, "abc")
 
-        assert page.keyboard.press.call_count == 3
-        calls = [c.args[0] for c in page.keyboard.press.call_args_list]
-        assert calls == ["a", "b", "c"]
+        # Each character generates keyDown + keyUp = 2 calls per char
+        assert tab.send.call_count == 6  # 3 chars * 2 events
 
-    async def test_clicks_element_before_typing(self):
-        page = MagicMock()
-        element = AsyncMock()
-        page.wait_for_selector = AsyncMock(return_value=element)
-        page.keyboard = MagicMock()
-        page.keyboard.press = AsyncMock()
+    async def test_types_single_character(self):
+        tab = AsyncMock()
+        tab.send = AsyncMock()
 
         with patch("app.bot.human_imitation.asyncio.sleep", new_callable=AsyncMock):
-            await HumanImitation.type_like_human(page, "#input", "x")
+            await HumanImitation.type_like_human(tab, "x")
 
-        element.click.assert_called_once()
+        assert tab.send.call_count == 2  # keyDown + keyUp
 
 
 class TestHumanDelay:
@@ -52,13 +35,12 @@ class TestHumanDelay:
 
 
 class TestNaturalScroll:
-    async def test_calls_mouse_wheel(self):
-        page = MagicMock()
-        page.mouse = MagicMock()
-        page.mouse.wheel = AsyncMock()
+    async def test_calls_mouse_engine_scroll(self):
+        tab = AsyncMock()
 
         with patch("app.bot.human_imitation.asyncio.sleep", new_callable=AsyncMock):
-            with patch.object(HumanImitation, "human_delay", new_callable=AsyncMock):
-                await HumanImitation.natural_scroll(page, scrolls=3)
+            with patch("app.bot.human_imitation.mouse_engine.scroll", new_callable=AsyncMock) as mock_scroll:
+                with patch.object(HumanImitation, "human_delay", new_callable=AsyncMock):
+                    await HumanImitation.natural_scroll(tab, scrolls=3)
 
-        assert page.mouse.wheel.call_count == 3
+        assert mock_scroll.call_count == 3

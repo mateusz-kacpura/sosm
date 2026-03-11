@@ -1,6 +1,6 @@
 import logging
-import re
-from playwright.async_api import Page
+
+import nodriver.cdp.runtime
 
 logger = logging.getLogger(__name__)
 
@@ -230,10 +230,55 @@ FINGERPRINT_JS = """
 """
 
 
-async def collect_fingerprint(page: Page) -> dict:
-    """Navigate to about:blank and collect fingerprint data via JS evaluation."""
-    await page.goto("about:blank")
-    raw_data = await page.evaluate(FINGERPRINT_JS)
+async def collect_fingerprint(tab) -> dict:
+    """Navigate to about:blank and collect fingerprint data via JS evaluation.
+
+    Works with any browser automation library that supports .get() and .evaluate()
+    (nodriver Tab, Playwright Page, etc.).
+    """
+    await tab.get("about:blank")
+    # Use CDP Runtime.evaluate directly with return_by_value=True
+    # (nodriver's tab.evaluate() forces serialization_options="deep"
+    # which overrides returnByValue and returns unusable DeepSerializedValue).
+    #
+    # Prepend mediaDevices polyfill — Wayfern on Linux doesn't expose
+    # navigator.mediaDevices (no audio/video hw access). Real Chrome always
+    # has this API even without devices. The polyfill mimics a PC where the
+    # user denied media permissions.
+    polyfill_and_fingerprint = """
+    if (!navigator.mediaDevices) {
+        Object.defineProperty(navigator, 'mediaDevices', {
+            value: {
+                enumerateDevices: () => Promise.resolve([]),
+                getUserMedia: () => Promise.reject(
+                    new DOMException('Permission denied', 'NotAllowedError')
+                ),
+                getSupportedConstraints: () => ({})
+            },
+            writable: false,
+            configurable: true,
+            enumerable: true
+        });
+    }
+    if (!navigator.deviceMemory) {
+        Object.defineProperty(navigator, 'deviceMemory', {
+            value: 8,
+            writable: false,
+            configurable: true,
+            enumerable: true
+        });
+    }
+    """ + f"({FINGERPRINT_JS})()"
+    remote_object, errors = await tab.send(
+        nodriver.cdp.runtime.evaluate(
+            expression=polyfill_and_fingerprint,
+            return_by_value=True,
+            user_gesture=True,
+        )
+    )
+    if errors:
+        raise RuntimeError(f"Fingerprint JS evaluation error: {errors}")
+    raw_data = remote_object.value
     return raw_data
 
 
@@ -269,6 +314,12 @@ def analyze_fingerprint(raw_data: dict) -> dict:
     if mtp is not None and mtp == 1:
         nav_issues.append("maxTouchPoints=1 — anomalia, desktop powinien miec 0, ekrany dotykowe 5 lub 10")
         score -= 10
+
+    # deviceMemory — Chrome exposes this on real hardware (4, 8, etc.)
+    # null/undefined suggests restricted environment or missing API
+    if nav.get("deviceMemory") is None:
+        nav_issues.append("deviceMemory niedostepne — Chrome na prawdziwym PC zwraca ilosc RAM")
+        score -= 5
 
     # DoNotTrack — only ~1% of real users enable this, making it a fingerprint signal
     dnt = nav.get("doNotTrack")
@@ -332,6 +383,22 @@ def analyze_fingerprint(raw_data: dict) -> dict:
             )
             score -= 15
             webgl_status = "fail"
+        # Ancient GPU detection — GPUs from before ~2012 paired with modern browsers
+        # create temporal anomalies that anti-fraud systems flag automatically.
+        renderer_lower = renderer.lower()
+        _ancient_gpu_markers = [
+            "radeon hd 2", "radeon hd 3", "radeon hd 4", "radeon hd 5",
+            "geforce 6", "geforce 7", "geforce 8", "geforce 9",
+            "geforce gt 1", "geforce gt 2", "geforce gt 3",
+            "intel gma", "intel 945", "intel 965",
+        ]
+        if any(marker in renderer_lower for marker in _ancient_gpu_markers):
+            webgl_issues.append(
+                f"GPU '{renderer}' jest przestarzaly (sprzed ~2012) — anomalia z nowoczesna przegladarka"
+            )
+            score -= 15
+            if webgl_status == "pass":
+                webgl_status = "warn"
 
     categories["webgl"] = {
         "status": webgl_status,
@@ -406,8 +473,8 @@ def analyze_fingerprint(raw_data: dict) -> dict:
     # --- Fonts ---
     fonts = raw_data.get("fonts", {})
     fonts_issues = []
-    if fonts.get("count", 0) < 3:
-        fonts_issues.append(f"Tylko {fonts.get('count', 0)} czcionek wykrytych (podejrzanie malo)")
+    if fonts.get("count", 0) == 0:
+        fonts_issues.append("Brak wykrytych czcionek — mozliwy blad w srodowisku renderowania")
         score -= 10
 
     categories["fonts"] = {
