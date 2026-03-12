@@ -96,16 +96,21 @@ function CampaignSpreadsheet({ campaignId, isActive, onRefresh }: {
     let newDate = part === "date" ? value : date
     let newTime = part === "time" ? value : time
     if (!newDate && !newTime) {
-      // Clear
-      setGroups(prev => prev.map(g => g.id === groupId ? { ...g, planned_at: null } : g))
-      try { await api.groups.update(groupId, { planned_at: null }) } catch { /* ignore */ }
+      setGroups(prev => prev.map(g => g.id === groupId ? { ...g, planned_at: null, status: "pending" } : g))
+      try {
+        await api.groups.update(groupId, { planned_at: null })
+        onRefresh()
+      } catch { /* ignore */ }
       return
     }
     if (!newDate) newDate = new Date().toISOString().slice(0, 10)
     if (!newTime) newTime = "12:00"
     const iso = new Date(`${newDate}T${newTime}`).toISOString()
-    setGroups(prev => prev.map(g => g.id === groupId ? { ...g, planned_at: iso } : g))
-    try { await api.groups.update(groupId, { planned_at: iso }) } catch { /* ignore */ }
+    setGroups(prev => prev.map(g => g.id === groupId ? { ...g, planned_at: iso, status: "pending" } : g))
+    try {
+      await api.groups.update(groupId, { planned_at: iso })
+      onRefresh()
+    } catch { /* ignore */ }
   }
 
   const handleBgChange = async (groupId: number, value: string) => {
@@ -195,7 +200,7 @@ function CampaignSpreadsheet({ campaignId, isActive, onRefresh }: {
       {/* Rows */}
       {groups.map((g, idx) => {
         const { date: plannedDate, time: plannedTime } = getDateParts(g.planned_at)
-        const isEditable = g.status !== "completed" && g.status !== "queued"
+        const isEditable = g.status !== "queued"
 
         const bgColor = g.background_style ? getBgColor(g.background_style) : undefined
 

@@ -144,20 +144,18 @@ class FBActions:
 
         elif background_style.startswith("deco_"):
             deco_index = int(background_style.replace("deco_", ""))
-            # Click the decorative expand button (the multi-color icon)
-            expand_btn = await self.dom.find_bg_expand_button(timeout=3.0)
-            if not expand_btn:
-                logger.warning("Nie znaleziono przycisku rozwijania tla dekoracyjnego")
-                os.makedirs(self.screenshot_dir, exist_ok=True)
-                await self.tab.save_screenshot(
-                    os.path.join(self.screenshot_dir, f"bg_expand_not_found_{self.account_email}.png")
-                )
-                return False
-            await mouse_engine.click_element(self.tab, expand_btn)
-            await HumanImitation.human_delay(0.5, 1.5)
 
-            # Select the Nth decorative background from the grid
-            deco_btn = await self.dom.find_bg_deco_by_index(deco_index, timeout=3.0)
+            # After clicking Aa, only ~5 decorative backgrounds are visible.
+            # Click the expand button (⊞ "Opcje tła") to reveal full grid (~30).
+            expand_btn = await self.dom.find_bg_expand_button(timeout=3.0)
+            if expand_btn:
+                logger.info("Klikam expand (Opcje tla): '%s'", expand_btn.get("text", "?"))
+                await mouse_engine.click_element(self.tab, expand_btn)
+                await HumanImitation.human_delay(1, 2)
+            else:
+                logger.warning("Nie znaleziono przycisku expand (Opcje tla) - probuje bez niego")
+
+            deco_btn = await self.dom.find_bg_deco_by_index(deco_index, timeout=5.0)
             if not deco_btn:
                 logger.warning("Nie znaleziono tla dekoracyjnego o indeksie: %d", deco_index)
                 os.makedirs(self.screenshot_dir, exist_ok=True)
@@ -165,9 +163,20 @@ class FBActions:
                     os.path.join(self.screenshot_dir, f"bg_deco_not_found_{self.account_email}.png")
                 )
                 return False
+            logger.info("Tlo dekoracyjne znalezione: '%s' (total=%s)",
+                        deco_btn.get("text", "")[:40], deco_btn.get("total", "?"))
             await mouse_engine.click_element(self.tab, deco_btn)
             await HumanImitation.human_delay(0.5, 1.5)
             logger.info("Tlo dekoracyjne wybrane: deco_%d", deco_index)
+
+            # Close the expanded background grid by clicking "Ukryj opcje tła"
+            # (otherwise the grid stays open and blocks the Publish button)
+            hide_btn = await self.dom.find_bg_hide_button(timeout=2.0)
+            if hide_btn:
+                logger.info("Zamykam siatke tel: '%s'", hide_btn.get("text", "?"))
+                await mouse_engine.click_element(self.tab, hide_btn)
+                await HumanImitation.human_delay(0.5, 1.0)
+
             return True
 
         logger.warning("Nieznany styl tla: %s", background_style)
@@ -197,9 +206,12 @@ class FBActions:
             await mouse_engine.click_element(self.tab, activity_review["submit"])
             await HumanImitation.human_delay(2, 4)
 
-        # Scroll naturally to seem human; composer will be scrolled into view later
+        # Scroll naturally to seem human, then back to top so composer is visible
         await HumanImitation.natural_scroll(self.tab, scrolls=2)
         await HumanImitation.human_delay(1, 2)
+        from .dom_walker import _eval_js
+        await _eval_js(self.tab, "window.scrollTo(0, 0)")
+        await HumanImitation.human_delay(0.5, 1.0)
 
         try:
             # Step 1: Find the composer trigger — structural match only (language-independent).
@@ -207,9 +219,27 @@ class FBActions:
             if not post_box:
                 raise TimeoutError("Nie znaleziono pola do tworzenia postu (composer)")
 
-            logger.info("Znaleziono composer: '%s'", post_box.get("text", "")[:50])
+            logger.info("Znaleziono composer: '%s' at y=%.0f", post_box.get("text", "")[:50], post_box.get("y", 0))
             await mouse_engine.click_element(self.tab, post_box)
             await HumanImitation.human_delay(1, 3)
+
+            # Diagnostic: verify a dialog opened (not a comment box)
+            dialog_check = await self.dom.find("div[role='dialog']", timeout=3.0)
+            if not dialog_check:
+                logger.warning("Klikniecie composera nie otworzylo dialogu - prawdopodobnie trafiono w pole komentarza. Probuje ponownie.")
+                os.makedirs(self.screenshot_dir, exist_ok=True)
+                await self.tab.save_screenshot(
+                    os.path.join(self.screenshot_dir, f"no_dialog_{self.account_email}.png")
+                )
+                # Scroll to very top and retry
+                await _eval_js(self.tab, "window.scrollTo(0, 0)")
+                await HumanImitation.human_delay(1, 2)
+                post_box = await self.dom.find_group_composer(timeout=10.0)
+                if not post_box:
+                    raise TimeoutError("Nie znaleziono composera po ponownej probie")
+                logger.info("Retry: composer at y=%.0f, text='%s'", post_box.get("y", 0), post_box.get("text", "")[:50])
+                await mouse_engine.click_element(self.tab, post_box)
+                await HumanImitation.human_delay(1, 3)
 
             # Step 2: Find the text editor in the post creation modal.
             editor = await self.dom.find(

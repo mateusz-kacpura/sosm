@@ -141,11 +141,22 @@ async def replace_campaign_groups(
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    # Delete existing groups
+    # Delete existing groups and their task logs
     existing = await db.execute(select(Group).where(Group.campaign_id == campaign_id))
-    for g in existing.scalars().all():
-        await db.delete(g)
+    existing_groups = existing.scalars().all()
+    if existing_groups:
+        from sqlalchemy import delete as sa_delete
+        existing_ids = [g.id for g in existing_groups]
+        await db.execute(
+            sa_delete(TaskLog).where(TaskLog.group_id.in_(existing_ids))
+        )
+        for g in existing_groups:
+            await db.delete(g)
     await db.flush()
+
+    # Revert campaign from ZAKOŃCZONA so new groups can be scheduled
+    if campaign.status == "ZAKOŃCZONA":
+        campaign.status = "AKTYWNA"
 
     # Create new groups
     new_groups = []

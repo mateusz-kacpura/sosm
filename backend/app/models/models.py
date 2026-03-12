@@ -59,7 +59,7 @@ class Group(Base):
     planned_at = Column(DateTime(timezone=True), nullable=True)
 
     campaign = relationship("Campaign", back_populates="groups")
-    task_logs = relationship("TaskLog", back_populates="group")
+    task_logs = relationship("TaskLog", back_populates="group", cascade="all, delete-orphan")
 
 
 class TaskLog(Base):

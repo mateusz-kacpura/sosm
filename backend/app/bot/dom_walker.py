@@ -126,13 +126,17 @@ class DomWalker:
         walks up to a wide container (~680px, <130px tall), then returns
         the nested div[role='button'] inside it (the actual clickable input).
 
-        Filters out comment boxes which live inside [role='article'] or form elements.
+        Collects ALL candidates and returns the one closest to the top of the page.
+        Filters out comment boxes which live inside [role='article'], form, or
+        deep inside [role='feed'] (below the first feed child).
         """
         js = """(() => {
             const avatars = [
                 ...document.querySelectorAll('img'),
                 ...document.querySelectorAll('svg'),
             ];
+
+            const candidates = [];
 
             for (const av of avatars) {
                 const ar = av.getBoundingClientRect();
@@ -144,6 +148,23 @@ class DomWalker:
                 if (av.closest("[role='article']")) continue;
                 // Skip avatars inside forms (comment input forms)
                 if (av.closest("form")) continue;
+
+                // If avatar is inside [role='feed'], only accept it if it's in the
+                // first or second direct child (the composer area). Comment boxes
+                // are in later children (actual posts).
+                const feed = av.closest("[role='feed']");
+                if (feed) {
+                    let feedChild = av;
+                    while (feedChild && feedChild.parentElement !== feed) {
+                        feedChild = feedChild.parentElement;
+                    }
+                    if (feedChild) {
+                        const children = [...feed.children];
+                        const idx = children.indexOf(feedChild);
+                        // Composer is typically the first or second child in the feed
+                        if (idx > 2) continue;
+                    }
+                }
 
                 let el = av.parentElement;
                 for (let depth = 0; depth < 10 && el; depth++, el = el.parentElement) {
@@ -165,15 +186,26 @@ class DomWalker:
                         const btnText = (btn.innerText || '').trim();
                         // Short placeholder text, not a menu item
                         if (btnText.length < 2 || btnText.length > 40) continue;
-                        // Scroll into view if below viewport
-                        btn.scrollIntoView({block: 'center', behavior: 'instant'});
-                        // Re-read rect after scrolling
-                        const br2 = btn.getBoundingClientRect();
-                        return {x: br2.x, y: br2.y, w: br2.width, h: br2.height, text: btnText};
+                        // Use absolute page position (not viewport) for stable sorting
+                        const pageY = br.y + window.scrollY;
+                        candidates.push({x: br.x, y: br.y, w: br.width, h: br.height, text: btnText, pageY: pageY});
                     }
                 }
             }
-            return null;
+
+            if (candidates.length === 0) return null;
+            // Return the candidate closest to the top of the page
+            candidates.sort((a, b) => a.pageY - b.pageY);
+            const best = candidates[0];
+            // Scroll it into view
+            const el = document.elementFromPoint(best.x + best.w/2, best.y + best.h/2);
+            if (el) el.scrollIntoView({block: 'center', behavior: 'instant'});
+            // Re-read position after scroll
+            if (el) {
+                const r2 = el.getBoundingClientRect();
+                return {x: r2.x, y: r2.y, w: r2.width, h: r2.height, text: best.text};
+            }
+            return best;
         })()"""
 
         deadline = asyncio.get_event_loop().time() + timeout
@@ -210,7 +242,21 @@ class DomWalker:
             function mkRect(btn) {
                 const r = btn.getBoundingClientRect();
                 return {x: r.x, y: r.y, w: r.width, h: r.height,
-                        text: (btn.innerText || '').slice(0, 200)};
+                        text: (btn.getAttribute('aria-label') || btn.innerText || '').slice(0, 200)};
+            }
+
+            // Strategy 0: find button by aria-label matching publish/submit keywords
+            // This is the most reliable — FB "Opublikuj" button has transparent bg
+            // but always has aria-label="Opublikuj" (PL) / "Post" (EN) / "Submit" (EN)
+            const publishKeywords = ['opublikuj', 'publish', 'post', 'submit', 'prześlij'];
+            for (const btn of buttons) {
+                const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+                if (!label) continue;
+                if (!publishKeywords.some(kw => label === kw)) continue;
+                const r = btn.getBoundingClientRect();
+                if (r.width < 50 || r.height < 20) continue;
+                if (btn.getAttribute('aria-disabled') === 'true') continue;
+                return mkRect(btn);
             }
 
             // Strategy 1: find button with colored background (primary CTA)
@@ -222,31 +268,24 @@ class DomWalker:
                 if (!bg) continue;
                 if (bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent') continue;
                 if (bg === 'rgb(255, 255, 255)') continue;
+                // Skip close/back buttons (small, gray)
+                if (r.width < 50 && r.height < 50) continue;
                 return mkRect(btn);
             }
 
-            // Strategy 2: fallback — bottom-most, non-tiny, enabled button
+            // Strategy 2: fallback — widest, bottom-most enabled button
             let best = null;
-            let bestY = -1;
+            let bestScore = -1;
             for (const btn of buttons) {
                 const r = btn.getBoundingClientRect();
-                if (r.width < 50 || r.height < 25) continue;
+                if (r.width < 100 || r.height < 25) continue;
                 if (btn.getAttribute('aria-disabled') === 'true') continue;
-                if (r.y > bestY) { best = btn; bestY = r.y; }
+                // Score by Y position (bottom) and width (wide = more likely CTA)
+                const score = r.y * 1000 + r.width;
+                if (score > bestScore) { best = btn; bestScore = score; }
             }
             if (best) return mkRect(best);
 
-            // Strategy 3: scan ALL elements in dialog for wide colored CTA
-            const allEls = dialog.querySelectorAll('*');
-            for (const el of allEls) {
-                const r = el.getBoundingClientRect();
-                if (r.width < 100 || r.height < 30 || r.height > 60) continue;
-                const bg = window.getComputedStyle(el).backgroundColor;
-                if (!bg) continue;
-                if (bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent') continue;
-                if (bg === 'rgb(255, 255, 255)') continue;
-                return mkRect(el);
-            }
             return null;
         })()"""
 
@@ -471,11 +510,54 @@ class DomWalker:
                 return None
             await asyncio.sleep(0.3)
 
-    async def find_bg_expand_button(self, timeout: float = 3.0) -> ElementRect | None:
-        """Find the expand button that shows decorative backgrounds.
+    async def find_bg_hide_button(self, timeout: float = 2.0) -> ElementRect | None:
+        """Find 'Ukryj opcje tła' / 'Hide background options' button to close the grid."""
+        js = """(() => {
+            const dialogs = document.querySelectorAll("div[role='dialog']");
+            let dialog = null;
+            for (const d of dialogs) {
+                const r = d.getBoundingClientRect();
+                if (r.width > 100 && r.height > 100) { dialog = d; break; }
+            }
+            if (!dialog) return null;
 
-        This is a small icon (CSS background-image sprite) that opens the
-        full grid of decorative background options.
+            const btns = dialog.querySelectorAll("[role='button'][aria-label]");
+            for (const btn of btns) {
+                const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+                if (label.includes('ukryj') && label.includes('t\u0142a')) {
+                    const r = btn.getBoundingClientRect();
+                    if (r.width > 5 && r.height > 5) {
+                        return {x: r.x, y: r.y, w: r.width, h: r.height,
+                                text: btn.getAttribute('aria-label').slice(0, 40)};
+                    }
+                }
+                if (label.includes('hide') && label.includes('background')) {
+                    const r = btn.getBoundingClientRect();
+                    if (r.width > 5 && r.height > 5) {
+                        return {x: r.x, y: r.y, w: r.width, h: r.height,
+                                text: btn.getAttribute('aria-label').slice(0, 40)};
+                    }
+                }
+            }
+            return null;
+        })()"""
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        while True:
+            result = await _eval_js(self.tab, js)
+            if result is not None:
+                return result
+            if asyncio.get_event_loop().time() >= deadline:
+                return None
+            await asyncio.sleep(0.3)
+
+    async def find_bg_expand_button(self, timeout: float = 3.0) -> ElementRect | None:
+        """Find the grid expand button (⊞) that reveals all decorative backgrounds.
+
+        After clicking the Aa button, only ~5 decorative backgrounds are
+        visible in a horizontal swatch row.  The expand button (aria-label
+        'Opcje tła' in Polish, 'Background options' in English) opens the
+        full grid with ~30 options.
         """
         js = """(() => {
             const dialogs = document.querySelectorAll("div[role='dialog']");
@@ -486,15 +568,29 @@ class DomWalker:
             }
             if (!dialog) return null;
 
-            // The expand button uses a CSS sprite (background-image on <i>)
-            const icons = dialog.querySelectorAll('i[style*="background-image"]');
-            for (const icon of icons) {
-                const r = icon.getBoundingClientRect();
-                if (r.width < 12 || r.width > 24) continue;
-                if (r.height < 12 || r.height > 24) continue;
-                const clickable = icon.closest("[role='button'], [tabindex]") || icon.parentElement;
-                const cr = clickable.getBoundingClientRect();
-                return {x: cr.x, y: cr.y, w: cr.width, h: cr.height, text: ''};
+            // Search for button by aria-label keywords (language-independent).
+            // Must NOT match "Ukryj opcje tła" (back/hide button) — only "Opcje tła" (expand).
+            const btns = dialog.querySelectorAll("[role='button'][aria-label]");
+            for (const btn of btns) {
+                const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+                // Polish: "Opcje tła" but NOT "Ukryj opcje tła"
+                if (label.includes('opcje') && label.includes('t\u0142a')
+                    && !label.includes('ukryj')) {
+                    const r = btn.getBoundingClientRect();
+                    if (r.width > 5 && r.height > 5) {
+                        return {x: r.x, y: r.y, w: r.width, h: r.height,
+                                text: btn.getAttribute('aria-label').slice(0, 40)};
+                    }
+                }
+                // English: "Background options" but NOT "Hide background options"
+                if (label.includes('background') && label.includes('option')
+                    && !label.includes('hide')) {
+                    const r = btn.getBoundingClientRect();
+                    if (r.width > 5 && r.height > 5) {
+                        return {x: r.x, y: r.y, w: r.width, h: r.height,
+                                text: btn.getAttribute('aria-label').slice(0, 40)};
+                    }
+                }
             }
             return null;
         })()"""
@@ -509,11 +605,14 @@ class DomWalker:
             await asyncio.sleep(0.3)
 
     async def find_bg_deco_by_index(self, index: int, timeout: float = 3.0) -> ElementRect | None:
-        """Find a decorative background by its position (0-indexed) in the grid.
+        """Find a decorative background by its position (0-indexed) in the swatch row.
 
-        After clicking the expand button, Facebook shows a horizontal/grid list
-        of background options. Each is a div with background-image or
-        background-color style, wrapped in a role='button' container.
+        After clicking the Aa button, Facebook shows all backgrounds in a
+        horizontal scrollable row.  Each is a div[role='button'][aria-label]
+        containing inner divs.  Decorative backgrounds have a computed
+        backgroundImage (set via CSS class, NOT inline style).  Solid-color
+        backgrounds only have backgroundColor.  We skip solid ones and count
+        only the decorative (backgroundImage) entries.
         """
         js = f"""(() => {{
             const dialogs = document.querySelectorAll("div[role='dialog']");
@@ -524,27 +623,35 @@ class DomWalker:
             }}
             if (!dialog) return null;
 
-            // Find all decorative background buttons in the picker grid.
-            // Each is a role='button' containing a div with background-image
-            // or background-color style.
-            const btns = dialog.querySelectorAll("[role='button']");
+            // Find all swatch buttons: role='button' with aria-label, size 15-120px
+            const btns = dialog.querySelectorAll("[role='button'][aria-label]");
             const decoButtons = [];
             for (const btn of btns) {{
-                const inner = btn.querySelector('div[style*="background-image"], div[style*="background-color"]');
-                if (!inner) continue;
-                const r = inner.getBoundingClientRect();
-                // Decorative swatches are small squares (~30-50px)
-                if (r.width < 20 || r.width > 60 || r.height < 20 || r.height > 60) continue;
+                const r = btn.getBoundingClientRect();
+                if (r.width > 120 || r.height > 120) continue;
+                if (r.width < 15 || r.height < 15) continue;
+
+                // Check if any child div has a computed backgroundImage
+                const children = btn.querySelectorAll('div');
+                let hasBgImage = false;
+                for (const child of children) {{
+                    const cs = window.getComputedStyle(child);
+                    if (cs.backgroundImage && cs.backgroundImage !== 'none') {{
+                        hasBgImage = true;
+                        break;
+                    }}
+                }}
+                if (!hasBgImage) continue;
                 decoButtons.push(btn);
             }}
 
             if ({index} < decoButtons.length) {{
                 const target = decoButtons[{index}];
-                const r = target.getBoundingClientRect();
-                // Scroll into view if needed
                 target.scrollIntoView({{block: 'nearest', behavior: 'instant'}});
                 const r2 = target.getBoundingClientRect();
-                return {{x: r2.x, y: r2.y, w: r2.width, h: r2.height, text: ''}};
+                return {{x: r2.x, y: r2.y, w: r2.width, h: r2.height,
+                         text: (target.getAttribute('aria-label') || '').slice(0, 40),
+                         total: decoButtons.length}};
             }}
             return null;
         }})()"""
