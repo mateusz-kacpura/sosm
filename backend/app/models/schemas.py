@@ -9,8 +9,10 @@ class AccountBase(BaseModel):
     proxy_url: Optional[str] = None
     browser_profile_id: Optional[str] = None
 
-class AccountCreate(AccountBase):
+class AccountCreate(BaseModel):
+    fb_email: str
     fb_password: str
+    proxy_url: Optional[str] = None
 
 class AccountResponse(AccountBase):
     id: int
@@ -87,7 +89,7 @@ class CampaignResponse(CampaignBase):
 # Log Schemas
 class TaskLogResponse(BaseModel):
     id: int
-    group_id: int
+    group_id: Optional[int] = None
     campaign_name: Optional[str] = None
     status: str
     error_message: Optional[str] = None

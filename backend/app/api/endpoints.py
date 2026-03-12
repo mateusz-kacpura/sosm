@@ -18,9 +18,29 @@ router = APIRouter()
 
 
 # --- Accounts ---
+def _donut_client():
+    from app.core.config import settings
+    from app.bot.donut_client import DonutClient
+    return DonutClient(settings.DONUT_API_URL, settings.DONUT_API_TOKEN)
+
+
 @router.post("/accounts/", response_model=AccountResponse)
 async def create_account(account: AccountCreate, db: AsyncSession = Depends(get_db)):
-    db_account = Account(**account.model_dump())
+    data = account.model_dump()
+
+    # Auto-create Donut Browser profile if not provided
+    if not data.get("browser_profile_id"):
+        try:
+            client = _donut_client()
+            profile_id = await client.create_profile(name=data["fb_email"])
+            data["browser_profile_id"] = profile_id
+        except Exception as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Nie udalo sie utworzyc profilu przegladarki: {e}"
+            )
+
+    db_account = Account(**data)
     db.add(db_account)
     await db.commit()
     await db.refresh(db_account)
@@ -37,6 +57,15 @@ async def delete_account(account_id: int, db: AsyncSession = Depends(get_db)):
     db_account = result.scalars().first()
     if not db_account:
         raise HTTPException(status_code=404, detail="Account not found")
+
+    # Delete Donut Browser profile if exists
+    if db_account.browser_profile_id:
+        try:
+            client = _donut_client()
+            await client.delete_profile(db_account.browser_profile_id)
+        except Exception:
+            pass  # Profile cleanup is best-effort
+
     await db.delete(db_account)
     await db.commit()
     return {"detail": "Account deleted"}

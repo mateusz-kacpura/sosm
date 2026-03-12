@@ -24,7 +24,7 @@ import {
   DialogTitle,
   DialogTrigger
 } from "@/components/ui/dialog"
-import { PlusCircle, Shield, Globe, Mail, Key, Fingerprint } from "lucide-react"
+import { PlusCircle, Shield, Globe, Mail, Key, Fingerprint, Loader2 } from "lucide-react"
 import { api } from "@/lib/api"
 
 export default function AccountsPage() {
@@ -36,7 +36,7 @@ export default function AccountsPage() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [proxy, setProxy] = useState("")
-  const [browserProfileId, setBrowserProfileId] = useState("")
+  const [submitting, setSubmitting] = useState(false)
 
   async function fetchAccounts() {
     try {
@@ -55,21 +55,23 @@ export default function AccountsPage() {
 
   const handleAddAccount = async (e: React.FormEvent) => {
     e.preventDefault()
+    setSubmitting(true)
+    setError(null)
     try {
       await api.accounts.create({
         fb_email: email,
         fb_password: password,
         proxy_url: proxy || null,
-        browser_profile_id: browserProfileId || null,
       })
       setEmail("")
       setPassword("")
       setProxy("")
-      setBrowserProfileId("")
       setIsDialogOpen(false)
       await fetchAccounts()
     } catch (err: any) {
       setError(err.message)
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -146,20 +148,15 @@ export default function AccountsPage() {
                   />
                 </div>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="browserProfileId">Browser Profile ID (Opcjonalnie)</Label>
-                <div className="relative">
-                  <Fingerprint className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="browserProfileId"
-                    placeholder="ID profilu z Donut Browser"
-                    className="pl-10 bg-secondary/50 border-primary/10"
-                    value={browserProfileId}
-                    onChange={(e) => setBrowserProfileId(e.target.value)}
-                  />
-                </div>
-              </div>
-              <Button type="submit" className="w-full bg-primary text-primary-foreground">Zapisz Konto</Button>
+              <Button type="submit" className="w-full bg-primary text-primary-foreground" disabled={submitting}>
+                {submitting ? (
+                  <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Tworzenie profilu...</>
+                ) : "Zapisz Konto"}
+              </Button>
+              <p className="text-xs text-muted-foreground text-center">
+                <Fingerprint className="inline h-3 w-3 mr-1" />
+                Profil przegladarki zostanie wygenerowany automatycznie
+              </p>
             </form>
           </DialogContent>
         </Dialog>
@@ -185,7 +182,9 @@ export default function AccountsPage() {
                     {acc.fb_email}
                   </TableCell>
                   <TableCell className="text-muted-foreground font-mono text-xs">{acc.proxy_url || "Brak"}</TableCell>
-                  <TableCell className="text-muted-foreground font-mono text-xs">{acc.browser_profile_id || "Brak"}</TableCell>
+                  <TableCell className="text-muted-foreground font-mono text-xs" title={acc.browser_profile_id || ""}>
+                    {acc.browser_profile_id ? acc.browser_profile_id.slice(0, 8) + "..." : "Brak"}
+                  </TableCell>
                   <TableCell>{acc.created_at ? new Date(acc.created_at).toLocaleDateString("pl-PL") : "-"}</TableCell>
                   <TableCell className="text-right">
                     <Button

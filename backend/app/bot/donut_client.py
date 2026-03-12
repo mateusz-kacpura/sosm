@@ -156,6 +156,49 @@ class DonutClient:
         except (httpx.ConnectError, httpx.ReadTimeout, OSError):
             return False
 
+    async def create_profile(self, name: str) -> str:
+        """Create a new Donut Browser profile with a unique fingerprint.
+
+        Returns:
+            The UUID of the newly created profile.
+        """
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{self.api_url}/v1/profiles",
+                headers=self._headers(),
+                json={
+                    "name": name,
+                    "browser": "wayfern",
+                    "version": "145.0.7632.116",
+                },
+            )
+
+        if resp.status_code >= 400:
+            raise DonutBrowserError(
+                f"Failed to create profile '{name}': HTTP {resp.status_code} {resp.text}"
+            )
+
+        data = resp.json()
+        profile_id = data["profile"]["id"]
+        logger.info("Donut profile created: %s (name=%s)", profile_id, name)
+        return profile_id
+
+    async def delete_profile(self, profile_id: str) -> None:
+        """Delete a Donut Browser profile and its data permanently."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.delete(
+                f"{self.api_url}/v1/profiles/{profile_id}",
+                headers=self._headers(),
+            )
+
+        if resp.status_code >= 400:
+            logger.warning(
+                "Donut delete_profile(%s) returned HTTP %d: %s",
+                profile_id, resp.status_code, resp.text,
+            )
+        else:
+            logger.info("Donut profile %s deleted", profile_id)
+
     async def stop_profile(self, profile_id: str) -> None:
         """Stop (kill) a Donut Browser profile.
 
