@@ -8,6 +8,7 @@ import {
   Megaphone,
   History,
   Fingerprint,
+  Monitor,
   LogOut
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -18,6 +19,7 @@ const menuItems = [
   { name: "Kampanie", href: "/campaigns", icon: Megaphone },
   { name: "Historia Logów", href: "/logs", icon: History },
   { name: "Fingerprint Test", href: "/fingerprint-test", icon: Fingerprint },
+  { name: "System", href: "/system", icon: Monitor },
 ]
 
 export function Sidebar() {

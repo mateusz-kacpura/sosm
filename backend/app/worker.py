@@ -25,6 +25,7 @@ celery_app.conf.beat_schedule = {
 
 import asyncio
 import logging
+import redis
 from datetime import datetime, timezone
 from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
@@ -37,6 +38,22 @@ logger = logging.getLogger(__name__)
 
 # Retry countdown: attempt 2 → 5s, attempt 3 → 10s, attempt 4 → 20s
 RETRY_COUNTDOWNS = [5, 10, 20]
+
+# Redis lock for profile-level mutual exclusion.
+# Only one task can use a given browser profile at a time.
+_redis_client = redis.Redis.from_url(settings.REDIS_URL)
+_PROFILE_LOCK_TTL = 300  # 5 minutes max
+
+
+async def _clear_queued_logs(db, group_id: int):
+    """Remove QUEUED markers for a group now that the task has a final status."""
+    from sqlalchemy import delete as sa_delete
+    await db.execute(
+        sa_delete(TaskLog).where(
+            TaskLog.group_id == group_id,
+            TaskLog.status == "QUEUED",
+        )
+    )
 
 
 async def run_bot_task(profile_id: str, account_email: str, account_pass: str,
@@ -58,6 +75,7 @@ async def run_bot_task(profile_id: str, account_email: str, account_pass: str,
 
                 is_logged = await actions.login(account_pass)
                 if not is_logged:
+                    await _clear_queued_logs(db, group_id)
                     task_log = TaskLog(
                         group_id=group_id,
                         campaign_name=campaign_name,
@@ -82,6 +100,7 @@ async def run_bot_task(profile_id: str, account_email: str, account_pass: str,
                     if account:
                         account.session_cookies_backup = cookies
 
+                await _clear_queued_logs(db, group_id)
                 task_log = TaskLog(
                     group_id=group_id,
                     campaign_name=campaign_name,
@@ -96,6 +115,7 @@ async def run_bot_task(profile_id: str, account_email: str, account_pass: str,
                 await manager.stop()
 
         except Exception as e:
+            await _clear_queued_logs(db, group_id)
             task_log = TaskLog(
                 group_id=group_id,
                 campaign_name=campaign_name,
@@ -124,12 +144,21 @@ def publish_post_task(self, profile_id: str, account_email: str, account_pass: s
                       campaign_name: str = "",
                       backup_cookies: dict = None):
     """Sync Celery entry point — delegates to async nodriver code."""
-    loop = asyncio.get_event_loop()
-    if loop.is_closed():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    # Acquire per-profile Redis lock to prevent concurrent browser sessions.
+    # Use longer blocking_timeout to wait for the other task to finish
+    # instead of consuming retry attempts.
+    lock_key = f"sosm:profile_lock:{profile_id}"
+    lock = _redis_client.lock(lock_key, timeout=_PROFILE_LOCK_TTL, blocking_timeout=120)
+    if not lock.acquire(blocking=True):
+        logger.warning("Profile %s still locked after 120s, skipping", profile_id)
+        return None
 
     try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
         return loop.run_until_complete(
             run_bot_task(profile_id, account_email, account_pass,
                          group_url, post_content, group_id, campaign_name,
@@ -139,6 +168,11 @@ def publish_post_task(self, profile_id: str, account_email: str, account_pass: s
         retry_num = self.request.retries
         countdown = RETRY_COUNTDOWNS[retry_num] if retry_num < len(RETRY_COUNTDOWNS) else 20
         raise self.retry(exc=exc, countdown=countdown)
+    finally:
+        try:
+            lock.release()
+        except redis.exceptions.LockNotOwnedError:
+            pass  # Lock expired (TTL) while task was running
 
 
 async def run_fingerprint_collection(test_id: int, profile_id: str = None,

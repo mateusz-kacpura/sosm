@@ -62,6 +62,21 @@ async def check_active_campaigns():
                 success_log = result_log.scalars().first()
 
                 if not success_log:
+                    # Sprawdź czy task jest już w toku (QUEUED lub EXCEPTION retry).
+                    # QUEUED = task w kolejce Celery, jeszcze nie zakończony.
+                    # EXCEPTION w ostatnich 5 min = Celery retry w toku.
+                    in_flight_cutoff = now - timedelta(minutes=5)
+                    result_in_flight = await db.execute(
+                        select(TaskLog).where(
+                            TaskLog.group_id == group.id,
+                            TaskLog.status.in_(["QUEUED", "EXCEPTION"]),
+                            TaskLog.executed_at > in_flight_cutoff,
+                        )
+                    )
+                    if result_in_flight.scalars().first():
+                        logger.info(f"Grupa {group.id} ma task w toku (QUEUED/EXCEPTION), pomijam")
+                        break
+
                     # Sprawdź interwał od ostatniego SUCCESS w tej kampanii
                     result_last_log = await db.execute(
                         select(TaskLog)
@@ -89,6 +104,16 @@ async def check_active_campaigns():
 
                     if should_publish:
                         logger.info(f"Kolejkowanie postu do grupy: {group.url} (Kampania: {campaign.name})")
+
+                        # Mark as QUEUED to prevent duplicate scheduling
+                        queued_log = TaskLog(
+                            group_id=group.id,
+                            campaign_name=campaign.name,
+                            status="QUEUED",
+                        )
+                        db.add(queued_log)
+                        await db.commit()
+
                         publish_post_task.delay(
                             profile_id=account.browser_profile_id,
                             account_email=account.fb_email,

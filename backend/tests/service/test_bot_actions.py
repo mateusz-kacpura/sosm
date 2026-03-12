@@ -24,9 +24,11 @@ def make_mock_dom_walker():
 
 class TestLogin:
     async def test_already_logged_in(self):
+        """When input[name='email'] is NOT found, user is already logged in."""
         tab = make_mock_tab()
         walker = make_mock_dom_walker()
-        walker.find = AsyncMock(return_value={"x": 0, "y": 0, "w": 100, "h": 50, "text": "Facebook"})
+        # No login form found → already logged in
+        walker.find = AsyncMock(return_value=None)
 
         with patch("app.bot.actions.DomWalker", return_value=walker):
             actions = FBActions(tab, "test@fb.com")
@@ -39,14 +41,16 @@ class TestLogin:
     async def test_login_success_flow(self):
         tab = make_mock_tab()
         walker = make_mock_dom_walker()
+        email_field = {"x": 100, "y": 200, "w": 200, "h": 30, "text": ""}
+        login_btn = {"x": 100, "y": 300, "w": 100, "h": 40, "text": "Log in"}
 
         walker.find = AsyncMock(side_effect=[
-            None,   # Not logged in
-            None,   # Cookie banner not found
-            {"x": 100, "y": 200, "w": 200, "h": 30, "text": ""},  # email field
+            email_field,  # Login form found → need to login
+            None,         # Cookie banner not found
             {"x": 100, "y": 250, "w": 200, "h": 30, "text": ""},  # pass field
-            {"x": 100, "y": 300, "w": 100, "h": 40, "text": "Zaloguj"},  # login btn
+            None,         # Verification: login form gone → success
         ])
+        walker.find_login_button = AsyncMock(return_value=login_btn)
 
         with patch("app.bot.actions.DomWalker", return_value=walker):
             actions = FBActions(tab, "test@fb.com")
@@ -63,7 +67,16 @@ class TestLogin:
     async def test_login_checkpoint_blocked(self):
         tab = make_mock_tab()
         walker = make_mock_dom_walker()
-        walker.find = AsyncMock(return_value=None)
+        email_field = {"x": 100, "y": 200, "w": 200, "h": 30, "text": ""}
+
+        walker.find = AsyncMock(side_effect=[
+            email_field,  # Login form found → need to login
+            None,         # Cookie banner
+            {"x": 100, "y": 250, "w": 200, "h": 30, "text": ""},  # pass field
+        ])
+        walker.find_login_button = AsyncMock(
+            return_value={"x": 100, "y": 300, "w": 100, "h": 40, "text": "Log in"}
+        )
 
         with patch("app.bot.actions.DomWalker", return_value=walker):
             actions = FBActions(tab, "test@fb.com")
@@ -79,15 +92,19 @@ class TestLogin:
     async def test_cookie_banner_accepted(self):
         tab = make_mock_tab()
         walker = make_mock_dom_walker()
+        email_field = {"x": 100, "y": 200, "w": 200, "h": 30, "text": ""}
         cookie_btn = {"x": 400, "y": 300, "w": 120, "h": 40, "text": "Accept"}
 
         walker.find = AsyncMock(side_effect=[
-            None,        # Not logged in
-            cookie_btn,  # Cookie banner found
-            {"x": 100, "y": 200, "w": 200, "h": 30, "text": ""},  # email
+            email_field,  # Login form found
+            cookie_btn,   # Cookie banner found
+            email_field,  # Re-find email after cookie accept
             {"x": 100, "y": 250, "w": 200, "h": 30, "text": ""},  # pass
-            {"x": 100, "y": 300, "w": 100, "h": 40, "text": ""},  # login
+            None,         # Verification: login form gone
         ])
+        walker.find_login_button = AsyncMock(
+            return_value={"x": 100, "y": 300, "w": 100, "h": 40, "text": "Log in"}
+        )
 
         with patch("app.bot.actions.DomWalker", return_value=walker):
             actions = FBActions(tab, "test@fb.com")

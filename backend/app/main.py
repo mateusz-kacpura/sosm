@@ -24,12 +24,14 @@ app.add_middleware(
 )
 
 from app.api.endpoints import router as api_router
+from app.api.system_endpoints import router as system_router
 
 @app.on_event("startup")
 async def startup_event():
     logger.info(f"Starting {settings.PROJECT_NAME} API...")
 
 app.include_router(api_router, prefix="/api")
+app.include_router(system_router, prefix="/api")
 
 @app.get("/health")
 async def health_check():

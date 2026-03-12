@@ -87,6 +87,75 @@ class DonutClient:
         logger.info("Donut profile %s started, CDP: %s", profile_id, debugger_address)
         return debugger_address
 
+    async def start_profile_immediate(self, profile_id: str) -> dict:
+        """Start a profile WITHOUT jitter delay. Returns full API response.
+
+        For use from the system management UI where instant feedback is needed,
+        not from Celery tasks (use start_profile() for those).
+        """
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{self.api_url}/v1/profiles/{profile_id}/run",
+                headers=self._headers(),
+                json={},
+            )
+
+            if resp.status_code == 500:
+                logger.warning("Donut profile %s may already be running, killing and retrying", profile_id)
+                await client.post(
+                    f"{self.api_url}/v1/profiles/{profile_id}/kill",
+                    headers=self._headers(),
+                )
+                await asyncio.sleep(2)
+                resp = await client.post(
+                    f"{self.api_url}/v1/profiles/{profile_id}/run",
+                    headers=self._headers(),
+                    json={},
+                )
+
+        if resp.status_code >= 400:
+            raise DonutBrowserError(
+                f"Failed to start profile {profile_id}: HTTP {resp.status_code} {resp.text}"
+            )
+
+        data = resp.json()
+        logger.info("Donut profile %s started (immediate), data: %s", profile_id, data)
+        return data
+
+    async def list_profiles(self) -> dict:
+        """List all Donut Browser profiles.
+
+        Returns:
+            Dict with 'profiles' list and 'total' count.
+        """
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{self.api_url}/v1/profiles",
+                headers=self._headers(),
+            )
+
+        if resp.status_code >= 400:
+            raise DonutBrowserError(
+                f"Failed to list profiles: HTTP {resp.status_code} {resp.text}"
+            )
+        return resp.json()
+
+    async def check_health(self) -> bool:
+        """Check if Donut Browser daemon API is reachable.
+
+        Returns:
+            True if the API responds successfully, False otherwise.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    f"{self.api_url}/v1/profiles",
+                    headers=self._headers(),
+                )
+            return resp.status_code < 500
+        except (httpx.ConnectError, httpx.ReadTimeout, OSError):
+            return False
+
     async def stop_profile(self, profile_id: str) -> None:
         """Stop (kill) a Donut Browser profile.
 

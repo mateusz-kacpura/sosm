@@ -42,6 +42,45 @@ if (!navigator.deviceMemory) {
         enumerable: true
     });
 }
+
+// screenX/screenY CDP fix — CDP's Input.dispatchMouseEvent sets
+// screenX===clientX and screenY===clientY. Real browsers add
+// window position + chrome offsets. Override prototype getters
+// to inject realistic offsets when CDP signature is detected.
+(function() {
+    var patchProto = function(proto) {
+        var origX = Object.getOwnPropertyDescriptor(proto, 'screenX');
+        var origY = Object.getOwnPropertyDescriptor(proto, 'screenY');
+        if (origX && origX.get) {
+            Object.defineProperty(proto, 'screenX', {
+                get: function() {
+                    var val = origX.get.call(this);
+                    if (val === this.clientX) {
+                        return val + (window.screenX || 0) +
+                               (window.outerWidth - window.innerWidth);
+                    }
+                    return val;
+                },
+                configurable: true
+            });
+        }
+        if (origY && origY.get) {
+            Object.defineProperty(proto, 'screenY', {
+                get: function() {
+                    var val = origY.get.call(this);
+                    if (val === this.clientY) {
+                        return val + (window.screenY || 0) +
+                               (window.outerHeight - window.innerHeight);
+                    }
+                    return val;
+                },
+                configurable: true
+            });
+        }
+    };
+    if (typeof MouseEvent !== 'undefined') patchProto(MouseEvent.prototype);
+    if (typeof PointerEvent !== 'undefined') patchProto(PointerEvent.prototype);
+})();
 """
 
 

@@ -28,7 +28,11 @@ celerybeat-schedule.db
 
 # Runtime data
 backend/screenshots/
+backend/app/bot/screenshots/
 backend/app/bot/sessions/
+
+# Logs
+*.log
 
 # OS
 .DS_Store
