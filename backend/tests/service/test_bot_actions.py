@@ -19,6 +19,7 @@ def make_mock_dom_walker():
     walker = AsyncMock()
     walker.find = AsyncMock(return_value=None)
     walker.find_text = AsyncMock(return_value=None)
+    walker.find_activity_review_dialog = AsyncMock(return_value=None)
     return walker
 
 
@@ -123,12 +124,14 @@ class TestPublishOnGroup:
         tab = make_mock_tab()
         walker = make_mock_dom_walker()
 
-        post_box = {"x": 100, "y": 200, "w": 500, "h": 40, "text": "Napisz cos"}
+        composer = {"x": 100, "y": 200, "w": 500, "h": 40, "text": "Write something"}
         editor = {"x": 100, "y": 300, "w": 500, "h": 200, "text": ""}
-        publish_btn = {"x": 400, "y": 550, "w": 100, "h": 40, "text": "Opublikuj"}
+        publish_btn = {"x": 400, "y": 550, "w": 100, "h": 40, "text": "Post"}
 
-        walker.find_text = AsyncMock(side_effect=[post_box, publish_btn])
-        walker.find = AsyncMock(return_value=editor)
+        walker.find_group_composer = AsyncMock(return_value=composer)
+        walker.find_dialog_submit_button = AsyncMock(return_value=publish_btn)
+        # find() calls: editor (found), then verification (None = dialog closed)
+        walker.find = AsyncMock(side_effect=[editor, None])
 
         with patch("app.bot.actions.DomWalker", return_value=walker):
             actions = FBActions(tab, "test@fb.com")
@@ -138,7 +141,8 @@ class TestPublishOnGroup:
                 with patch("app.bot.actions.HumanImitation.type_like_human", new_callable=AsyncMock):
                     with patch("app.bot.actions.mouse_engine.click_element", new_callable=AsyncMock):
                         with patch("app.bot.actions.CheckpointDetector.handle_checkpoint_if_needed", new_callable=AsyncMock, return_value=False):
-                            result = await actions.publish_on_group("https://fb.com/groups/1", "Hello!")
+                            with patch("app.bot.dom_walker._eval_js", new_callable=AsyncMock, return_value=None):
+                                result = await actions.publish_on_group("https://fb.com/groups/1", "Hello!")
 
         assert result is True
 
@@ -156,10 +160,10 @@ class TestPublishOnGroup:
 
         assert result is False
 
-    async def test_publish_timeout_returns_false(self):
+    async def test_publish_composer_not_found(self):
         tab = make_mock_tab()
         walker = make_mock_dom_walker()
-        walker.find_text = AsyncMock(return_value=None)
+        walker.find_group_composer = AsyncMock(return_value=None)
 
         with patch("app.bot.actions.DomWalker", return_value=walker):
             actions = FBActions(tab, "test@fb.com")
@@ -167,21 +171,56 @@ class TestPublishOnGroup:
         with patch("app.bot.actions.HumanImitation.human_delay", new_callable=AsyncMock):
             with patch("app.bot.actions.HumanImitation.natural_scroll", new_callable=AsyncMock):
                 with patch("app.bot.actions.CheckpointDetector.handle_checkpoint_if_needed", new_callable=AsyncMock, return_value=False):
-                    result = await actions.publish_on_group("https://fb.com/groups/1", "Hello!")
+                    with patch("app.bot.dom_walker._eval_js", new_callable=AsyncMock, return_value=None):
+                        result = await actions.publish_on_group("https://fb.com/groups/1", "Hello!")
 
         assert result is False
         tab.save_screenshot.assert_called_once()
+
+    async def test_publish_handles_confirmation_dialog(self):
+        """After clicking Publish, if a confirmation dialog appears (e.g. group rules),
+        the bot clicks its CTA button and returns True."""
+        tab = make_mock_tab()
+        walker = make_mock_dom_walker()
+
+        composer = {"x": 100, "y": 200, "w": 500, "h": 40, "text": "Write"}
+        editor = {"x": 100, "y": 300, "w": 500, "h": 200, "text": ""}
+        publish_btn = {"x": 400, "y": 550, "w": 100, "h": 40, "text": "Post"}
+        confirm_btn = {"x": 400, "y": 400, "w": 200, "h": 40, "text": "Accept"}
+
+        walker.find_group_composer = AsyncMock(return_value=composer)
+        # First call returns publish btn, second returns confirm btn, third returns None
+        walker.find_dialog_submit_button = AsyncMock(
+            side_effect=[publish_btn, confirm_btn, None]
+        )
+        walker.find = AsyncMock(return_value=editor)
+
+        with patch("app.bot.actions.DomWalker", return_value=walker):
+            actions = FBActions(tab, "test@fb.com")
+
+        with patch("app.bot.actions.HumanImitation.human_delay", new_callable=AsyncMock):
+            with patch("app.bot.actions.HumanImitation.natural_scroll", new_callable=AsyncMock):
+                with patch("app.bot.actions.HumanImitation.type_like_human", new_callable=AsyncMock):
+                    with patch("app.bot.actions.mouse_engine.click_element", new_callable=AsyncMock) as mock_click:
+                        with patch("app.bot.actions.CheckpointDetector.handle_checkpoint_if_needed", new_callable=AsyncMock, return_value=False):
+                            with patch("app.bot.dom_walker._eval_js", new_callable=AsyncMock, return_value=None):
+                                result = await actions.publish_on_group("https://fb.com/groups/1", "Hello!")
+
+        assert result is True
+        # Should have clicked: composer, editor, publish btn, confirm btn
+        assert mock_click.call_count >= 3
 
     async def test_publish_with_media_urls_no_crash(self):
         tab = make_mock_tab()
         walker = make_mock_dom_walker()
 
-        post_box = {"x": 100, "y": 200, "w": 500, "h": 40, "text": "Napisz cos"}
+        composer = {"x": 100, "y": 200, "w": 500, "h": 40, "text": "Write something"}
         editor = {"x": 100, "y": 300, "w": 500, "h": 200, "text": ""}
-        publish_btn = {"x": 400, "y": 550, "w": 100, "h": 40, "text": "Opublikuj"}
+        publish_btn = {"x": 400, "y": 550, "w": 100, "h": 40, "text": "Post"}
 
-        walker.find_text = AsyncMock(side_effect=[post_box, publish_btn])
-        walker.find = AsyncMock(return_value=editor)
+        walker.find_group_composer = AsyncMock(return_value=composer)
+        walker.find_dialog_submit_button = AsyncMock(return_value=publish_btn)
+        walker.find = AsyncMock(side_effect=[editor, None])
 
         with patch("app.bot.actions.DomWalker", return_value=walker):
             actions = FBActions(tab, "test@fb.com")
@@ -191,8 +230,9 @@ class TestPublishOnGroup:
                 with patch("app.bot.actions.HumanImitation.type_like_human", new_callable=AsyncMock):
                     with patch("app.bot.actions.mouse_engine.click_element", new_callable=AsyncMock):
                         with patch("app.bot.actions.CheckpointDetector.handle_checkpoint_if_needed", new_callable=AsyncMock, return_value=False):
-                            result = await actions.publish_on_group(
-                                "https://fb.com/groups/1", "Hello!", media_urls=["img.jpg"]
-                            )
+                            with patch("app.bot.dom_walker._eval_js", new_callable=AsyncMock, return_value=None):
+                                result = await actions.publish_on_group(
+                                    "https://fb.com/groups/1", "Hello!", media_urls=["img.jpg"]
+                                )
 
         assert result is True

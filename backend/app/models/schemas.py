@@ -25,6 +25,8 @@ class GroupInput(BaseModel):
     url: str
     content: str
     media_urls: Optional[List[str]] = None
+    background_style: Optional[str] = None
+    planned_at: Optional[datetime] = None
 
 class GroupResponse(BaseModel):
     id: int
@@ -32,17 +34,30 @@ class GroupResponse(BaseModel):
     name: Optional[str] = None
     content: str
     media_urls: Optional[List[str]] = None
+    background_style: Optional[str] = None
     order: int
+    planned_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
+
+class GroupUpdate(BaseModel):
+    planned_at: Optional[datetime] = None
+    content: Optional[str] = None
+    url: Optional[str] = None
+    background_style: Optional[str] = None
+
+class CampaignGroupsReplace(BaseModel):
+    groups: List[GroupInput]
 
 
 # Campaign Schemas
 class CampaignBase(BaseModel):
     name: str
-    base_interval_minutes: int = 60
-    random_deviation_percent: float = 10.0
+    posts_per_day: int = 1
+    active_hours_start: Optional[str] = "08:00"
+    active_hours_end: Optional[str] = "22:00"
+    active_days: Optional[list[int]] = [0, 1, 2, 3, 4, 5, 6]
 
 class CampaignCreate(CampaignBase):
     account_id: int
@@ -50,7 +65,13 @@ class CampaignCreate(CampaignBase):
     start_at: Optional[datetime] = None
 
 class CampaignUpdate(BaseModel):
-    status: str  # SZKIC, AKTYWNA, WSTRZYMANA, ZAKOŃCZONA, BŁĄD
+    status: Optional[str] = None  # SZKIC, AKTYWNA, WSTRZYMANA, ZAKOŃCZONA, BŁĄD
+    name: Optional[str] = None
+    posts_per_day: Optional[int] = None
+    active_hours_start: Optional[str] = None
+    active_hours_end: Optional[str] = None
+    active_days: Optional[list[int]] = None
+    start_at: Optional[datetime] = None
 
 class CampaignResponse(CampaignBase):
     id: int

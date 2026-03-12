@@ -44,6 +44,15 @@ export const api = {
     create: (data: any) => fetchApi("/campaigns/", { method: "POST", body: JSON.stringify(data) }),
     update: (id: number, data: any) => fetchApi(`/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
     groups: (id: number) => fetchApi(`/campaigns/${id}/groups`),
+    replaceGroups: (id: number, groups: any[]) =>
+      fetchApi(`/campaigns/${id}/groups`, { method: "PUT", body: JSON.stringify({ groups }) }),
+    schedulePreview: (id: number) => fetchApi(`/campaigns/${id}/schedule-preview`),
+    generateSchedule: (id: number) =>
+      fetchApi(`/campaigns/${id}/generate-schedule`, { method: "POST" }),
+  },
+  groups: {
+    update: (id: number, data: any) =>
+      fetchApi(`/groups/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   },
   logs: {
     list: () => fetchApi("/logs/"),

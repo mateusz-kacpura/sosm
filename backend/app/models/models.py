@@ -27,8 +27,14 @@ class Campaign(Base):
     name = Column(String, nullable=False)
     account_id = Column(Integer, ForeignKey("accounts.id"))
 
-    base_interval_minutes = Column(Integer, default=60)
-    random_deviation_percent = Column(Float, default=10.0)
+    base_interval_minutes = Column(Integer, default=840)
+    random_deviation_percent = Column(Float, default=20.0)
+    posts_per_day = Column(Integer, default=1)
+
+    # Schedule windows
+    active_hours_start = Column(String, default="08:00")  # HH:MM
+    active_hours_end = Column(String, default="22:00")    # HH:MM
+    active_days = Column(JSON, default=[0, 1, 2, 3, 4, 5, 6])  # 0=Mon, 6=Sun
 
     # SZKIC, AKTYWNA, WSTRZYMANA, ZAKOŃCZONA, BŁĄD
     status = Column(String, default="SZKIC")
@@ -48,7 +54,9 @@ class Group(Base):
     name = Column(String, nullable=True)
     content = Column(String, nullable=False)
     media_urls = Column(JSON, nullable=True)
+    background_style = Column(String, nullable=True)
     order = Column(Integer, default=0)
+    planned_at = Column(DateTime(timezone=True), nullable=True)
 
     campaign = relationship("Campaign", back_populates="groups")
     task_logs = relationship("TaskLog", back_populates="group")

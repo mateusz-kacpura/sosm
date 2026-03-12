@@ -41,11 +41,10 @@ class TestCreateCampaign:
             },
         )
         data = response.json()
-        assert data["base_interval_minutes"] == 60
-        assert data["random_deviation_percent"] == 10.0
+        assert data["posts_per_day"] == 1
         assert data["start_at"] is None
 
-    async def test_create_campaign_custom_interval(self, client):
+    async def test_create_campaign_custom_posts_per_day(self, client):
         account_id = await create_test_account(client)
         response = await client.post(
             "/api/campaigns/",
@@ -53,13 +52,11 @@ class TestCreateCampaign:
                 "name": "Custom",
                 "account_id": account_id,
                 "groups": [{"url": "url", "content": "content"}],
-                "base_interval_minutes": 30,
-                "random_deviation_percent": 25.0,
+                "posts_per_day": 5,
             },
         )
         data = response.json()
-        assert data["base_interval_minutes"] == 30
-        assert data["random_deviation_percent"] == 25.0
+        assert data["posts_per_day"] == 5
 
     async def test_create_campaign_with_start_at(self, client):
         account_id = await create_test_account(client)
@@ -166,12 +163,34 @@ class TestUpdateCampaignStatus:
         assert response.status_code == 404
         assert response.json()["detail"] == "Campaign not found"
 
-    async def test_update_campaign_missing_status(self, client):
+    async def test_update_campaign_partial_fields(self, client):
         account_id = await create_test_account(client)
         create_resp = await client.post(
             "/api/campaigns/",
             json={
-                "name": "No Status",
+                "name": "Original",
+                "account_id": account_id,
+                "groups": [{"url": "url", "content": "content"}],
+            },
+        )
+        campaign_id = create_resp.json()["id"]
+
+        response = await client.patch(
+            f"/api/campaigns/{campaign_id}",
+            json={"name": "Updated", "posts_per_day": 3},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["name"] == "Updated"
+        assert data["posts_per_day"] == 3
+        assert data["status"] == "SZKIC"
+
+    async def test_update_campaign_empty_body(self, client):
+        account_id = await create_test_account(client)
+        create_resp = await client.post(
+            "/api/campaigns/",
+            json={
+                "name": "No Change",
                 "account_id": account_id,
                 "groups": [{"url": "url", "content": "content"}],
             },
@@ -182,7 +201,8 @@ class TestUpdateCampaignStatus:
             f"/api/campaigns/{campaign_id}",
             json={},
         )
-        assert response.status_code == 422
+        assert response.status_code == 200
+        assert response.json()["name"] == "No Change"
 
 
 class TestGetCampaignGroups:

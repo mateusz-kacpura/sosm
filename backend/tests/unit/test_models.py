@@ -73,8 +73,9 @@ class TestCampaignModel:
         db_session.add(campaign)
         await db_session.flush()
 
-        assert campaign.base_interval_minutes == 60
-        assert campaign.random_deviation_percent == 10.0
+        assert campaign.base_interval_minutes == 840
+        assert campaign.random_deviation_percent == 20.0
+        assert campaign.posts_per_day == 1
 
     async def test_campaign_start_at(self, db_session):
         from datetime import datetime, timezone

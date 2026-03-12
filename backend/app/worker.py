@@ -59,7 +59,8 @@ async def _clear_queued_logs(db, group_id: int):
 async def run_bot_task(profile_id: str, account_email: str, account_pass: str,
                        group_url: str, post_content: str, group_id: int,
                        campaign_name: str = "",
-                       backup_cookies: dict = None):
+                       backup_cookies: dict = None,
+                       background_style: str = None):
     """Async function invoked by Celery in a new event loop.
 
     Connects to Donut Browser profile via nodriver (CDP), performs login + publish.
@@ -86,7 +87,7 @@ async def run_bot_task(profile_id: str, account_email: str, account_pass: str,
                     await db.commit()
                     return False
 
-                success = await actions.publish_on_group(group_url, post_content)
+                success = await actions.publish_on_group(group_url, post_content, background_style=background_style)
                 status = "SUCCESS" if success else "FAILED"
                 error_msg = None if success else "Blad publikacji / brak uprawnien na grupie"
 
@@ -142,7 +143,8 @@ def check_campaigns_task():
 def publish_post_task(self, profile_id: str, account_email: str, account_pass: str,
                       group_url: str, post_content: str, group_id: int,
                       campaign_name: str = "",
-                      backup_cookies: dict = None):
+                      backup_cookies: dict = None,
+                      background_style: str = None):
     """Sync Celery entry point — delegates to async nodriver code."""
     # Acquire per-profile Redis lock to prevent concurrent browser sessions.
     # Use longer blocking_timeout to wait for the other task to finish
@@ -162,7 +164,7 @@ def publish_post_task(self, profile_id: str, account_email: str, account_pass: s
         return loop.run_until_complete(
             run_bot_task(profile_id, account_email, account_pass,
                          group_url, post_content, group_id, campaign_name,
-                         backup_cookies)
+                         backup_cookies, background_style)
         )
     except Exception as exc:
         retry_num = self.request.retries

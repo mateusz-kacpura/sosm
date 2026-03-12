@@ -98,7 +98,83 @@ class FBActions:
             if (form) form.submit();
         })()""")
 
-    async def publish_on_group(self, group_url: str, text: str, media_urls=None) -> bool:
+    async def _select_post_background(self, background_style: str) -> bool:
+        """Select a post background color in the Facebook composer dialog.
+
+        Must be called BEFORE typing text. Language-independent — uses
+        structural/visual matching (element sizes, background-color CSS).
+
+        Args:
+            background_style: "red", "black", or "deco_N" (N = 0-32 index)
+
+        Returns:
+            True if background was selected successfully.
+        """
+        logger.info("Ustawianie tla: %s", background_style)
+
+        # Step 1: Find the Aa background button in the dialog toolbar.
+        bg_btn = await self.dom.find_background_button(timeout=5.0)
+        if not bg_btn:
+            logger.warning("Nie znaleziono przycisku tla (Aa) w dialogu")
+            os.makedirs(self.screenshot_dir, exist_ok=True)
+            await self.tab.save_screenshot(
+                os.path.join(self.screenshot_dir, f"bg_aa_not_found_{self.account_email}.png")
+            )
+            return False
+
+        logger.info("Klikam przycisk tla (Aa), detected via: %s", bg_btn.get("text", "?"))
+        await mouse_engine.click_element(self.tab, bg_btn)
+        await HumanImitation.human_delay(1, 2)
+
+        if background_style in ("red", "black"):
+            # Solid colors are shown directly as colored circles/divs
+            color_rgb = "rgb(226, 1, 59)" if background_style == "red" else "rgb(17, 17, 17)"
+            solid_btn = await self.dom.find_bg_color_button(color_rgb, timeout=3.0)
+            if not solid_btn:
+                logger.warning("Nie znaleziono przycisku koloru: %s (szukam %s)", background_style, color_rgb)
+                os.makedirs(self.screenshot_dir, exist_ok=True)
+                await self.tab.save_screenshot(
+                    os.path.join(self.screenshot_dir, f"bg_color_not_found_{self.account_email}.png")
+                )
+                return False
+            await mouse_engine.click_element(self.tab, solid_btn)
+            await HumanImitation.human_delay(0.5, 1.5)
+            logger.info("Tlo solid wybrane: %s", background_style)
+            return True
+
+        elif background_style.startswith("deco_"):
+            deco_index = int(background_style.replace("deco_", ""))
+            # Click the decorative expand button (the multi-color icon)
+            expand_btn = await self.dom.find_bg_expand_button(timeout=3.0)
+            if not expand_btn:
+                logger.warning("Nie znaleziono przycisku rozwijania tla dekoracyjnego")
+                os.makedirs(self.screenshot_dir, exist_ok=True)
+                await self.tab.save_screenshot(
+                    os.path.join(self.screenshot_dir, f"bg_expand_not_found_{self.account_email}.png")
+                )
+                return False
+            await mouse_engine.click_element(self.tab, expand_btn)
+            await HumanImitation.human_delay(0.5, 1.5)
+
+            # Select the Nth decorative background from the grid
+            deco_btn = await self.dom.find_bg_deco_by_index(deco_index, timeout=3.0)
+            if not deco_btn:
+                logger.warning("Nie znaleziono tla dekoracyjnego o indeksie: %d", deco_index)
+                os.makedirs(self.screenshot_dir, exist_ok=True)
+                await self.tab.save_screenshot(
+                    os.path.join(self.screenshot_dir, f"bg_deco_not_found_{self.account_email}.png")
+                )
+                return False
+            await mouse_engine.click_element(self.tab, deco_btn)
+            await HumanImitation.human_delay(0.5, 1.5)
+            logger.info("Tlo dekoracyjne wybrane: deco_%d", deco_index)
+            return True
+
+        logger.warning("Nieznany styl tla: %s", background_style)
+        return False
+
+    async def publish_on_group(self, group_url: str, text: str, media_urls=None,
+                               background_style: str = None) -> bool:
         """Publish a text post to a Facebook group."""
         logger.info("Nawigacja do grupy: %s", group_url)
 
@@ -108,28 +184,57 @@ class FBActions:
         if await CheckpointDetector.handle_checkpoint_if_needed(self.tab, self.screenshot_dir, self.account_email):
             return False
 
+        # Handle Activity Review dialog (group rules question) if present
+        activity_review = await self.dom.find_activity_review_dialog(timeout=3.0)
+        if activity_review:
+            logger.info(
+                "Wykryto dialog aktywnosci (regulamin grupy), akceptuje..."
+            )
+            # Click the first radio option ("Tak" / "Yes")
+            await mouse_engine.click_element(self.tab, activity_review["radio"])
+            await HumanImitation.human_delay(0.5, 1.5)
+            # Click the submit button ("Prześlij" / "Submit")
+            await mouse_engine.click_element(self.tab, activity_review["submit"])
+            await HumanImitation.human_delay(2, 4)
+
+        # Scroll naturally to seem human; composer will be scrolled into view later
         await HumanImitation.natural_scroll(self.tab, scrolls=2)
+        await HumanImitation.human_delay(1, 2)
 
         try:
-            # Find the "Write something" / "Create public post" button.
-            # Try language-independent approach first, then fall back to text matching.
-            post_box = await self.dom.find_text("Napisz co\u015b", tag="div[role='button']", timeout=10.0)
+            # Step 1: Find the composer trigger — structural match only (language-independent).
+            post_box = await self.dom.find_group_composer(timeout=10.0)
             if not post_box:
-                post_box = await self.dom.find_text("Write something", tag="div[role='button']", timeout=3.0)
-            if not post_box:
-                post_box = await self.dom.find_text("Utw\u00f3rz publiczny post", tag="div[role='button']", timeout=3.0)
-            if not post_box:
-                post_box = await self.dom.find_text("Create public post", tag="div[role='button']", timeout=3.0)
-            if not post_box:
-                raise TimeoutError("Nie znaleziono pola do tworzenia postu")
+                raise TimeoutError("Nie znaleziono pola do tworzenia postu (composer)")
 
+            logger.info("Znaleziono composer: '%s'", post_box.get("text", "")[:50])
             await mouse_engine.click_element(self.tab, post_box)
-            await HumanImitation.human_delay()
+            await HumanImitation.human_delay(1, 3)
 
-            # Find the text editor in the modal
-            editor = await self.dom.find("div[role='textbox'][contenteditable='true']")
+            # Step 2: Find the text editor in the post creation modal.
+            editor = await self.dom.find(
+                "div[role='dialog'] div[role='textbox'][contenteditable='true']",
+                timeout=5.0,
+            )
             if not editor:
-                raise TimeoutError("Nie znaleziono edytora tekstowego")
+                raise TimeoutError("Nie znaleziono edytora tekstowego w modalu")
+
+            # Step 2b: Select background BEFORE typing (FB requirement).
+            if background_style:
+                bg_text = text[:100]  # Background posts limited to 100 chars
+                bg_ok = await self._select_post_background(background_style)
+                if bg_ok:
+                    logger.info("Tlo wybrane: %s, tekst skrocony do %d znakow", background_style, len(bg_text))
+                    text = bg_text
+                    # Re-find textbox — FB moves it ~94px down after background selection
+                    editor = await self.dom.find(
+                        "div[role='dialog'] div[role='textbox'][contenteditable='true']",
+                        timeout=5.0,
+                    )
+                    if not editor:
+                        raise TimeoutError("Nie znaleziono edytora po wybraniu tla")
+                else:
+                    logger.warning("Nie udalo sie wybrac tla, kontynuuje bez tla")
 
             await mouse_engine.click_element(self.tab, editor)
             await HumanImitation.type_like_human(self.tab, text, delay_range=(0.02, 0.08))
@@ -139,22 +244,44 @@ class FBActions:
 
             await HumanImitation.human_delay(2, 4)
 
-            # Click Publish button
-            publish_btn = await self.dom.find_text("Opublikuj", timeout=5.0)
+            # Step 3: Click Publish button — structural match (bottom-most in dialog).
+            publish_btn = await self.dom.find_dialog_submit_button(timeout=5.0)
             if not publish_btn:
-                publish_btn = await self.dom.find_text("Post", tag="div[role='button']", timeout=3.0)
-            if not publish_btn:
-                raise TimeoutError("Nie znaleziono przycisku Opublikuj")
+                raise TimeoutError("Nie znaleziono przycisku Opublikuj w modalu")
 
+            logger.info("Klikam przycisk publikacji: '%s'", publish_btn.get("text", "")[:50])
             await mouse_engine.click_element(self.tab, publish_btn)
 
-            await HumanImitation.human_delay(5, 8)
+            await HumanImitation.human_delay(3, 5)
 
-            logger.info("Sukces: Post opublikowany (lub wyslany do akceptacji admina)")
+            # Step 4: Handle post-publish dialogs (e.g. group rules acceptance).
+            # After clicking Publish, Facebook may show a rules/terms dialog.
+            # Try up to 3 times to find and click a CTA button in any visible dialog.
+            for attempt in range(3):
+                confirm_btn = await self.dom.find_dialog_submit_button(timeout=3.0)
+                if not confirm_btn:
+                    break  # No more dialogs to confirm — success!
+                logger.info(
+                    "Dialog potwierdzenia (proba %d): '%s'",
+                    attempt + 1, confirm_btn.get("text", "")[:50],
+                )
+                await mouse_engine.click_element(self.tab, confirm_btn)
+                await HumanImitation.human_delay(2, 4)
+
+            # Final verification: take screenshot for debugging
+            os.makedirs(self.screenshot_dir, exist_ok=True)
+            await self.tab.save_screenshot(
+                os.path.join(
+                    self.screenshot_dir,
+                    f"after_publish_{self.account_email}.png",
+                )
+            )
+
+            logger.info("Post opublikowany (kliknięto Opublikuj + potwierdzenia)")
             return True
 
         except (TimeoutError, Exception) as e:
-            logger.error("Nie znaleziono pola tekstowego na grupie: %s", e)
+            logger.error("Blad publikacji na grupie: %s", e)
             os.makedirs(self.screenshot_dir, exist_ok=True)
             await self.tab.save_screenshot(
                 os.path.join(self.screenshot_dir, f"error_group_{self.account_email}.png")

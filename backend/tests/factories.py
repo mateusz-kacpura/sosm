@@ -23,8 +23,12 @@ class CampaignFactory:
     def create(**overrides) -> Campaign:
         defaults = {
             "name": "Test Campaign",
-            "base_interval_minutes": 60,
-            "random_deviation_percent": 10.0,
+            "posts_per_day": 1,
+            "base_interval_minutes": 840,
+            "random_deviation_percent": 20.0,
+            "active_hours_start": "00:00",
+            "active_hours_end": "23:59",
+            "active_days": [0, 1, 2, 3, 4, 5, 6],
             "status": "SZKIC",
             "created_at": datetime.now(timezone.utc),
         }

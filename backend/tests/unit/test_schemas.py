@@ -56,21 +56,18 @@ class TestCampaignSchemas:
             groups=[GroupInput(url="https://fb.com/groups/1", content="Hello")],
         )
         assert campaign.name == "Test"
-        assert campaign.base_interval_minutes == 60
-        assert campaign.random_deviation_percent == 10.0
+        assert campaign.posts_per_day == 1
         assert len(campaign.groups) == 1
         assert campaign.groups[0].content == "Hello"
 
-    def test_campaign_create_custom_interval(self):
+    def test_campaign_create_custom_posts_per_day(self):
         campaign = CampaignCreate(
             name="Test",
             account_id=1,
             groups=[GroupInput(url="url", content="content")],
-            base_interval_minutes=30,
-            random_deviation_percent=20.0,
+            posts_per_day=5,
         )
-        assert campaign.base_interval_minutes == 30
-        assert campaign.random_deviation_percent == 20.0
+        assert campaign.posts_per_day == 5
 
     def test_campaign_create_with_start_at(self):
         from datetime import datetime, timezone
@@ -107,9 +104,16 @@ class TestCampaignSchemas:
             update = CampaignUpdate(status=status)
             assert update.status == status
 
-    def test_campaign_update_missing_status(self):
-        with pytest.raises(ValidationError):
-            CampaignUpdate()
+    def test_campaign_update_partial(self):
+        update = CampaignUpdate()
+        assert update.status is None
+        assert update.name is None
+
+    def test_campaign_update_partial_fields(self):
+        update = CampaignUpdate(name="New Name", posts_per_day=2)
+        assert update.name == "New Name"
+        assert update.posts_per_day == 2
+        assert update.status is None
 
 
 class TestGroupSchemas:

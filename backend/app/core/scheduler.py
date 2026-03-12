@@ -1,5 +1,4 @@
 import asyncio
-import random
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
 import logging
@@ -13,6 +12,7 @@ logger = logging.getLogger(__name__)
 async def check_active_campaigns():
     """
     Sprawdza aktywne kampanie i kolejkuje zadania publikacji.
+    Publikuje grupy których planned_at <= now i nie mają SUCCESS loga.
     Uruchamiana cyklicznie przez Celery Beat.
     """
     logger.info("Uruchamianie sprawdzania aktywnych kampanii...")
@@ -36,9 +36,13 @@ async def check_active_campaigns():
                     logger.info(f"Kampania {campaign.id} jeszcze nie wystartowała (start_at: {start_at})")
                     continue
 
-            # Pobierz grupy (posortowane wg order)
+            # Pobierz grupy z planned_at <= now, posortowane wg planned_at
             result_groups = await db.execute(
-                select(Group).where(Group.campaign_id == campaign.id).order_by(Group.order)
+                select(Group).where(
+                    Group.campaign_id == campaign.id,
+                    Group.planned_at.isnot(None),
+                    Group.planned_at <= now,
+                ).order_by(Group.planned_at)
             )
             groups = result_groups.scalars().all()
 
@@ -57,75 +61,65 @@ async def check_active_campaigns():
                     select(TaskLog).where(
                         TaskLog.group_id == group.id,
                         TaskLog.status == "SUCCESS"
-                    ).order_by(TaskLog.executed_at.desc())
+                    )
                 )
-                success_log = result_log.scalars().first()
+                if result_log.scalars().first():
+                    continue
 
-                if not success_log:
-                    # Sprawdź czy task jest już w toku (QUEUED lub EXCEPTION retry).
-                    # QUEUED = task w kolejce Celery, jeszcze nie zakończony.
-                    # EXCEPTION w ostatnich 5 min = Celery retry w toku.
-                    in_flight_cutoff = now - timedelta(minutes=5)
-                    result_in_flight = await db.execute(
-                        select(TaskLog).where(
-                            TaskLog.group_id == group.id,
-                            TaskLog.status.in_(["QUEUED", "EXCEPTION"]),
-                            TaskLog.executed_at > in_flight_cutoff,
-                        )
+                # Sprawdź czy task jest już w toku
+                in_flight_cutoff = now - timedelta(minutes=5)
+                result_in_flight = await db.execute(
+                    select(TaskLog).where(
+                        TaskLog.group_id == group.id,
+                        TaskLog.status.in_(["QUEUED", "EXCEPTION"]),
+                        TaskLog.executed_at > in_flight_cutoff,
                     )
-                    if result_in_flight.scalars().first():
-                        logger.info(f"Grupa {group.id} ma task w toku (QUEUED/EXCEPTION), pomijam")
-                        break
+                )
+                if result_in_flight.scalars().first():
+                    logger.info(f"Grupa {group.id} ma task w toku, pomijam")
+                    continue
 
-                    # Sprawdź interwał od ostatniego SUCCESS w tej kampanii
-                    result_last_log = await db.execute(
-                        select(TaskLog)
-                        .join(Group)
-                        .where(Group.campaign_id == campaign.id, TaskLog.status == "SUCCESS")
-                        .order_by(TaskLog.executed_at.desc())
-                    )
-                    last_log = result_last_log.scalars().first()
+                logger.info(f"Kolejkowanie postu do grupy: {group.url} (Kampania: {campaign.name})")
 
-                    should_publish = True
-                    if last_log:
-                        deviation_min = campaign.base_interval_minutes * (campaign.random_deviation_percent / 100.0)
-                        random_deviation = random.uniform(-deviation_min, deviation_min)
-                        target_interval = campaign.base_interval_minutes + random_deviation
+                queued_log = TaskLog(
+                    group_id=group.id,
+                    campaign_name=campaign.name,
+                    status="QUEUED",
+                )
+                db.add(queued_log)
+                await db.commit()
 
-                        last_executed = last_log.executed_at
-                        if last_executed.tzinfo is None:
-                            last_executed = last_executed.replace(tzinfo=timezone.utc)
+                publish_post_task.delay(
+                    profile_id=account.browser_profile_id,
+                    account_email=account.fb_email,
+                    account_pass=account.fb_password,
+                    group_url=group.url,
+                    post_content=group.content,
+                    group_id=group.id,
+                    campaign_name=campaign.name,
+                    backup_cookies=account.session_cookies_backup,
+                    background_style=group.background_style,
+                )
+                # 1 post per kampanię per cykl
+                break
 
-                        next_run_time = last_executed + timedelta(minutes=target_interval)
-
-                        if now < next_run_time:
-                            should_publish = False
-                            logger.info(f"Oczekiwanie na interwał dla kampanii {campaign.id}. Następny post o: {next_run_time}")
-
-                    if should_publish:
-                        logger.info(f"Kolejkowanie postu do grupy: {group.url} (Kampania: {campaign.name})")
-
-                        # Mark as QUEUED to prevent duplicate scheduling
-                        queued_log = TaskLog(
-                            group_id=group.id,
-                            campaign_name=campaign.name,
-                            status="QUEUED",
-                        )
-                        db.add(queued_log)
-                        await db.commit()
-
-                        publish_post_task.delay(
-                            profile_id=account.browser_profile_id,
-                            account_email=account.fb_email,
-                            account_pass=account.fb_password,
-                            group_url=group.url,
-                            post_content=group.content,
-                            group_id=group.id,
-                            campaign_name=campaign.name,
-                            backup_cookies=account.session_cookies_backup,
-                        )
-                        # Limit: 1 post per kampanię per cykl
-                        break
+            # Sprawdź czy wszystkie grupy są gotowe
+            all_groups_result = await db.execute(
+                select(Group).where(Group.campaign_id == campaign.id)
+            )
+            all_groups = all_groups_result.scalars().all()
+            all_done = True
+            for g in all_groups:
+                log_result = await db.execute(
+                    select(TaskLog).where(TaskLog.group_id == g.id, TaskLog.status == "SUCCESS")
+                )
+                if not log_result.scalars().first():
+                    all_done = False
+                    break
+            if all_done and all_groups:
+                campaign.status = "ZAKOŃCZONA"
+                await db.commit()
+                logger.info(f"Kampania {campaign.id} zakończona — wszystkie grupy opublikowane")
 
 
 def run_campaign_scheduler():
