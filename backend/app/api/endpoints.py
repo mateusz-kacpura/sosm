@@ -272,8 +272,27 @@ async def update_group(group_id: int, update: GroupUpdate, db: AsyncSession = De
     group = result.scalars().first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
-    for field, value in update.model_dump(exclude_unset=True).items():
+
+    update_data = update.model_dump(exclude_unset=True)
+    reschedule = "planned_at" in update_data
+
+    for field, value in update_data.items():
         setattr(group, field, value)
+
+    if reschedule:
+        # Clear old task logs so the group can be re-published
+        from sqlalchemy import delete as sa_delete
+        await db.execute(
+            sa_delete(TaskLog).where(TaskLog.group_id == group_id)
+        )
+        # Revert campaign from ZAKOŃCZONA if needed
+        campaign_result = await db.execute(
+            select(Campaign).where(Campaign.id == group.campaign_id)
+        )
+        campaign = campaign_result.scalars().first()
+        if campaign and campaign.status == "ZAKOŃCZONA":
+            campaign.status = "AKTYWNA"
+
     await db.commit()
     await db.refresh(group)
     return group

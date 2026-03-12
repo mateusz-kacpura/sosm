@@ -125,6 +125,8 @@ class DomWalker:
         Works bottom-up: finds avatar-sized SVG/img elements (30-50px),
         walks up to a wide container (~680px, <130px tall), then returns
         the nested div[role='button'] inside it (the actual clickable input).
+
+        Filters out comment boxes which live inside [role='article'] or form elements.
         """
         js = """(() => {
             const avatars = [
@@ -138,6 +140,10 @@ class DomWalker:
                 if (ar.height < 30 || ar.height > 50) continue;
                 // Skip avatars in the navbar area (< 100px from top)
                 if (ar.y < 100) continue;
+                // Skip avatars inside posts (comment boxes) — they sit inside role='article'
+                if (av.closest("[role='article']")) continue;
+                // Skip avatars inside forms (comment input forms)
+                if (av.closest("form")) continue;
 
                 let el = av.parentElement;
                 for (let depth = 0; depth < 10 && el; depth++, el = el.parentElement) {
@@ -147,6 +153,8 @@ class DomWalker:
                     const text = (el.innerText || '').trim();
                     // Container text should be short-ish (placeholder + maybe a few labels)
                     if (text.length < 2 || text.length > 80) continue;
+                    // Must NOT be inside a post article or comment form
+                    if (el.closest("[role='article']") || el.closest("form")) continue;
 
                     // Look for a div[role='button'] INSIDE — that's the clickable input
                     const btns = el.querySelectorAll("div[role='button']");
