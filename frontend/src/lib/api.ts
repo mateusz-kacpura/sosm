@@ -1,5 +1,5 @@
 const API_BASE_URL = "http://localhost:8010/api"
-const HOST_AGENT_URL = "http://localhost:8020"
+const HOST_AGENT_URL = "http://localhost:8010/api/system"
 
 export async function fetchApi(endpoint: string, options: RequestInit = {}) {
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
@@ -62,16 +62,14 @@ export const api = {
     status: () => fetchApi("/system/status"),
   },
   hostAgent: {
-    status: () => fetchHostAgent("/status"),
-    startDonut: () => fetchHostAgent("/donut/start", { method: "POST" }),
-    stopDonut: () => fetchHostAgent("/donut/stop", { method: "POST" }),
-    startWorker: () => fetchHostAgent("/worker/start", { method: "POST" }),
-    stopWorker: () => fetchHostAgent("/worker/stop", { method: "POST" }),
-    donutProfiles: () => fetchHostAgent("/donut/profiles"),
+    status: () => fetchHostAgent("/host/status"),
+    startDonut: () => fetchHostAgent("/host/donut/start", { method: "POST" }),
+    stopDonut: () => fetchHostAgent("/host/donut/stop", { method: "POST" }),
+    donutProfiles: () => fetchApi("/system/donut/profiles"),
     donutRunProfile: (id: string) =>
-      fetchHostAgent(`/donut/profiles/${id}/run`, { method: "POST" }),
+      fetchApi(`/system/donut/profiles/${id}/run`, { method: "POST" }),
     donutKillProfile: (id: string) =>
-      fetchHostAgent(`/donut/profiles/${id}/kill`, { method: "POST" }),
+      fetchApi(`/system/donut/profiles/${id}/kill`, { method: "POST" }),
   },
   fingerprintTests: {
     list: () => fetchApi("/fingerprint-tests/"),

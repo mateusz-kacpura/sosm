@@ -530,7 +530,6 @@ async def create_fingerprint_test(request: FingerprintTestCreate, db: AsyncSessi
     await db.commit()
     await db.refresh(db_test)
 
-    from app.worker import run_fingerprint_test_task
     # Use account's browser profile if available, otherwise the default fingerprint profile
     fp_profile_id = None
     if request.account_id:
@@ -538,11 +537,22 @@ async def create_fingerprint_test(request: FingerprintTestCreate, db: AsyncSessi
         acc = result2.scalars().first()
         if acc:
             fp_profile_id = acc.browser_profile_id
-    run_fingerprint_test_task.delay(
-        test_id=db_test.id,
-        profile_id=fp_profile_id,
-        visit_external_sites=request.visit_external_sites,
-    )
+
+    from app.core.config import settings as _settings
+    if _settings.STANDALONE:
+        from app.task_runner import submit_fingerprint_task
+        await submit_fingerprint_task(
+            test_id=db_test.id,
+            profile_id=fp_profile_id,
+            visit_external_sites=request.visit_external_sites,
+        )
+    else:
+        from app.worker import run_fingerprint_test_task
+        run_fingerprint_test_task.delay(
+            test_id=db_test.id,
+            profile_id=fp_profile_id,
+            visit_external_sites=request.visit_external_sites,
+        )
 
     db_test.status = "RUNNING"
     await db.commit()

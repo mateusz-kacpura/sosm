@@ -287,13 +287,10 @@ export default function CampaignsPage() {
 
   const handleStatusChange = async (id: number, status: string) => {
     try {
-      // Auto-start worker when activating a campaign
+      // Check host status when activating a campaign
       if (status === "AKTYWNA") {
         try {
-          const hostStatus = await api.hostAgent.status()
-          if (!hostStatus.celery_worker?.running) {
-            await api.hostAgent.startWorker()
-          }
+          await api.hostAgent.status()
         } catch { /* host agent unavailable — user will see it in /system */ }
       }
       await api.campaigns.update(id, { status })
@@ -406,7 +403,7 @@ export default function CampaignsPage() {
                       </TableCell>
                       <TableCell>{statusBadge(camp.status)}</TableCell>
                       <TableCell className="text-right space-x-1" onClick={(e) => e.stopPropagation()}>
-                        <Link href={`/campaigns/${camp.id}/edit`}>
+                        <Link href={`/campaigns/edit?id=${camp.id}`}>
                           <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary">
                             <Pencil className="h-4 w-4" />
                           </Button>

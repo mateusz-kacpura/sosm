@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
 import logging
 
+from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.models import Campaign, Account, Group, TaskLog
 
@@ -13,7 +14,7 @@ async def check_active_campaigns():
     """
     Sprawdza aktywne kampanie i kolejkuje zadania publikacji.
     Publikuje grupy których planned_at <= now i nie mają SUCCESS loga.
-    Uruchamiana cyklicznie przez Celery Beat.
+    Uruchamiana cyklicznie przez Celery Beat lub APScheduler.
     """
     logger.info("Uruchamianie sprawdzania aktywnych kampanii...")
     async with AsyncSessionLocal() as db:
@@ -21,8 +22,6 @@ async def check_active_campaigns():
             select(Campaign).where(Campaign.status == "AKTYWNA")
         )
         campaigns = result.scalars().all()
-
-        from app.worker import publish_post_task
 
         now = datetime.now(timezone.utc)
 
@@ -89,17 +88,32 @@ async def check_active_campaigns():
                 db.add(queued_log)
                 await db.commit()
 
-                publish_post_task.delay(
-                    profile_id=account.browser_profile_id,
-                    account_email=account.fb_email,
-                    account_pass=account.fb_password,
-                    group_url=group.url,
-                    post_content=group.content,
-                    group_id=group.id,
-                    campaign_name=campaign.name,
-                    backup_cookies=account.session_cookies_backup,
-                    background_style=group.background_style,
-                )
+                if settings.STANDALONE:
+                    from app.task_runner import submit_publish_task
+                    await submit_publish_task(
+                        profile_id=account.browser_profile_id,
+                        account_email=account.fb_email,
+                        account_pass=account.fb_password,
+                        group_url=group.url,
+                        post_content=group.content,
+                        group_id=group.id,
+                        campaign_name=campaign.name,
+                        backup_cookies=account.session_cookies_backup,
+                        background_style=group.background_style,
+                    )
+                else:
+                    from app.worker import publish_post_task
+                    publish_post_task.delay(
+                        profile_id=account.browser_profile_id,
+                        account_email=account.fb_email,
+                        account_pass=account.fb_password,
+                        group_url=group.url,
+                        post_content=group.content,
+                        group_id=group.id,
+                        campaign_name=campaign.name,
+                        backup_cookies=account.session_cookies_backup,
+                        background_style=group.background_style,
+                    )
                 # 1 post per kampanię per cykl
                 break
 

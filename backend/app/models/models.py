@@ -34,7 +34,7 @@ class Campaign(Base):
     # Schedule windows
     active_hours_start = Column(String, default="08:00")  # HH:MM
     active_hours_end = Column(String, default="22:00")    # HH:MM
-    active_days = Column(JSON, default=[0, 1, 2, 3, 4, 5, 6])  # 0=Mon, 6=Sun
+    active_days = Column(JSON, default=lambda: [0, 1, 2, 3, 4, 5, 6])  # 0=Mon, 6=Sun
 
     # SZKIC, AKTYWNA, WSTRZYMANA, ZAKOŃCZONA, BŁĄD
     status = Column(String, default="SZKIC")

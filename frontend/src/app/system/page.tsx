@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button"
 import {
   Database, Server, Cpu, Globe, Monitor,
   Play, Square, RefreshCw, Loader2,
-  CheckCircle2, XCircle, Terminal, AlertTriangle, Power
+  CheckCircle2, XCircle, Terminal, AlertTriangle
 } from "lucide-react"
 import { api } from "@/lib/api"
 
@@ -18,19 +18,6 @@ interface ServiceStatus {
   status: "ok" | "error"
   detail: string
   workers?: string[]
-}
-
-interface SystemStatus {
-  database: ServiceStatus
-  redis: ServiceStatus
-  api: ServiceStatus
-  celery_worker: ServiceStatus
-  donut_browser: ServiceStatus
-}
-
-interface HostAgentStatus {
-  donut_daemon: { running: boolean; pid: number | null }
-  celery_worker: { running: boolean; pids: number[] }
 }
 
 interface DonutProfile {
@@ -41,18 +28,15 @@ interface DonutProfile {
   [key: string]: any
 }
 
-const serviceConfig: {
-  key: keyof SystemStatus
-  label: string
-  icon: any
-  controllable?: "donut" | "worker"
-}[] = [
-  { key: "database", label: "PostgreSQL", icon: Database },
-  { key: "redis", label: "Redis", icon: Server },
-  { key: "api", label: "FastAPI", icon: Monitor },
-  { key: "celery_worker", label: "Celery Worker", icon: Cpu, controllable: "worker" },
-  { key: "donut_browser", label: "Donut Browser", icon: Globe, controllable: "donut" },
-]
+// Label/icon mapping for known service keys from API response
+const SERVICE_META: Record<string, { label: string; icon: any; controllable?: "donut" }> = {
+  database: { label: "Baza danych", icon: Database },
+  redis: { label: "Redis", icon: Server },
+  api: { label: "FastAPI", icon: Monitor },
+  celery_worker: { label: "Celery Worker", icon: Cpu },
+  task_runner: { label: "Task Runner", icon: Cpu },
+  donut_browser: { label: "Donut Browser", icon: Globe, controllable: "donut" },
+}
 
 function ServiceCard({
   label,
@@ -148,7 +132,7 @@ function ServiceCard({
 }
 
 export default function SystemPage() {
-  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
+  const [systemStatus, setSystemStatus] = useState<Record<string, ServiceStatus> | null>(null)
   const [profiles, setProfiles] = useState<DonutProfile[]>([])
   const [statusLoading, setStatusLoading] = useState(true)
   const [profilesLoading, setProfilesLoading] = useState(true)
@@ -161,10 +145,10 @@ export default function SystemPage() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      // Get backend status (DB, Redis, Celery, API)
+      // Get backend status — keys are dynamic (standalone vs Docker mode)
       const backendData = await api.system.status()
 
-      // Get host agent status for Donut Browser (host agent can reach localhost:10108)
+      // Enrich donut_browser status via host agent endpoint
       try {
         const hostData = await api.hostAgent.status()
         setHostAgentAvailable(true)
@@ -178,10 +162,6 @@ export default function SystemPage() {
         }
       } catch {
         setHostAgentAvailable(false)
-        backendData.donut_browser = {
-          status: "error",
-          detail: "Host Agent niedostepny (wymagany do kontroli Donut Browser)",
-        }
       }
 
       setSystemStatus(backendData)
@@ -218,27 +198,20 @@ export default function SystemPage() {
   }, [fetchStatus, fetchProfiles])
 
   const handleServiceAction = async (
-    service: "donut" | "worker",
+    service: "donut",
     action: "start" | "stop"
   ) => {
-    const key = service
-    setServiceActions((prev) => ({ ...prev, [key]: true }))
+    setServiceActions((prev) => ({ ...prev, [service]: true }))
     try {
-      if (service === "donut") {
-        if (action === "start") await api.hostAgent.startDonut()
-        else await api.hostAgent.stopDonut()
-      } else {
-        if (action === "start") await api.hostAgent.startWorker()
-        else await api.hostAgent.stopWorker()
-      }
-      // Wait briefly for processes to settle, then refresh
+      if (action === "start") await api.hostAgent.startDonut()
+      else await api.hostAgent.stopDonut()
       await new Promise((r) => setTimeout(r, 2000))
       await fetchStatus()
-      if (service === "donut") await fetchProfiles()
+      await fetchProfiles()
     } catch (err: any) {
       setError(`Blad ${action === "start" ? "uruchamiania" : "zatrzymywania"}: ${err.message}`)
     } finally {
-      setServiceActions((prev) => ({ ...prev, [key]: false }))
+      setServiceActions((prev) => ({ ...prev, [service]: false }))
     }
   }
 
@@ -308,49 +281,44 @@ export default function SystemPage() {
         </Card>
       )}
 
-      {/* Host Agent warning */}
-      {!hostAgentAvailable && !statusLoading && (
-        <Card className="border-amber-500/20 bg-amber-500/5">
-          <CardContent className="pt-4 pb-4 flex items-center gap-3">
-            <Power className="h-5 w-5 text-amber-500 shrink-0" />
-            <div>
-              <p className="text-sm text-amber-500 font-medium">
-                Host Agent niedostepny
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Przyciski start/stop wymagaja uruchomienia host agenta.
-                Uruchom: <code className="bg-secondary/50 px-1 rounded">./backend/venv/bin/python host_agent.py</code> lub <code className="bg-secondary/50 px-1 rounded">./start.sh</code>
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Service Status Grid */}
+      {/* Service Status Grid — data-driven from API response */}
       <div>
         <h3 className="text-lg font-semibold mb-4 text-foreground">Status uslug</h3>
         <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-5">
-          {serviceConfig.map((svc) => (
-            <ServiceCard
-              key={svc.key}
-              label={svc.label}
-              icon={svc.icon}
-              status={systemStatus?.[svc.key] || null}
-              isLoading={statusLoading}
-              controllable={hostAgentAvailable ? svc.controllable : undefined}
-              onStart={
-                svc.controllable
-                  ? () => handleServiceAction(svc.controllable!, "start")
-                  : undefined
-              }
-              onStop={
-                svc.controllable
-                  ? () => handleServiceAction(svc.controllable!, "stop")
-                  : undefined
-              }
-              actionLoading={svc.controllable ? serviceActions[svc.controllable] : false}
-            />
-          ))}
+          {statusLoading ? (
+            // Skeleton placeholders while loading
+            Array.from({ length: 4 }).map((_, i) => (
+              <Card key={i} className="border-primary/10 bg-card/50">
+                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">...</CardTitle></CardHeader>
+                <CardContent><Loader2 className="h-4 w-4 animate-spin text-primary" /></CardContent>
+              </Card>
+            ))
+          ) : systemStatus ? (
+            Object.entries(systemStatus).map(([key, svc]) => {
+              const meta = SERVICE_META[key] || { label: key, icon: Server }
+              return (
+                <ServiceCard
+                  key={key}
+                  label={meta.label}
+                  icon={meta.icon}
+                  status={svc}
+                  isLoading={false}
+                  controllable={hostAgentAvailable ? meta.controllable : undefined}
+                  onStart={
+                    meta.controllable
+                      ? () => handleServiceAction(meta.controllable!, "start")
+                      : undefined
+                  }
+                  onStop={
+                    meta.controllable
+                      ? () => handleServiceAction(meta.controllable!, "stop")
+                      : undefined
+                  }
+                  actionLoading={meta.controllable ? serviceActions[meta.controllable] : false}
+                />
+              )
+            })
+          ) : null}
         </div>
       </div>
 
@@ -499,35 +467,21 @@ export default function SystemPage() {
         <CardHeader>
           <div className="flex items-center gap-2">
             <Terminal className="h-4 w-4 text-primary" />
-            <CardTitle className="text-sm">Uruchamianie uslug</CardTitle>
+            <CardTitle className="text-sm">Informacje</CardTitle>
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
           <div>
             <p className="text-sm text-muted-foreground mb-1.5">
-              Wszystkie uslugi jednym poleceniem:
+              Donut Browser musi byc uruchomiony przed wykonywaniem zadan.
+              Uzyj przycisku &quot;Uruchom&quot; na karcie Donut Browser lub uruchom go recznie.
             </p>
-            <pre className="text-xs bg-secondary/50 rounded p-3 overflow-x-auto font-mono">
-              ./start.sh
-            </pre>
           </div>
           <div>
-            <p className="text-sm text-muted-foreground mb-1.5">Host Agent (wymagany do start/stop z panelu):</p>
-            <pre className="text-xs bg-secondary/50 rounded p-3 overflow-x-auto font-mono">
-              ./backend/venv/bin/python host_agent.py
-            </pre>
-          </div>
-          <div>
-            <p className="text-sm text-muted-foreground mb-1.5">Celery Worker (na hoscie):</p>
-            <pre className="text-xs bg-secondary/50 rounded p-3 overflow-x-auto font-mono">
-              cd backend &amp;&amp; source venv/bin/activate &amp;&amp; celery -A app.worker.celery_app worker --loglevel=info --concurrency=10
-            </pre>
-          </div>
-          <div>
-            <p className="text-sm text-muted-foreground mb-1.5">Docker Compose:</p>
-            <pre className="text-xs bg-secondary/50 rounded p-3 overflow-x-auto font-mono">
-              docker compose up -d
-            </pre>
+            <p className="text-sm text-muted-foreground mb-1.5">
+              Profile przegladarki sa automatycznie tworzone przy dodawaniu kont.
+              Mozesz nimi zarzadzac w tabeli ponizej.
+            </p>
           </div>
         </CardContent>
       </Card>

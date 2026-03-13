@@ -1,31 +1,37 @@
-from celery import Celery
 from app.core.config import settings
 
-celery_app = Celery(
-    "sosm_worker",
-    broker=settings.REDIS_URL,
-    backend=settings.REDIS_URL,
-)
+# Celery + Redis only in Docker mode
+if not settings.STANDALONE:
+    from celery import Celery
+    import redis
 
-celery_app.conf.update(
-    task_serializer='json',
-    accept_content=['json'],
-    result_serializer='json',
-    timezone='UTC',
-    enable_utc=True,
-    broker_connection_retry_on_startup=True
-)
+    celery_app = Celery(
+        "sosm_worker",
+        broker=settings.REDIS_URL,
+        backend=settings.REDIS_URL,
+    )
 
-celery_app.conf.beat_schedule = {
-    'check-active-campaigns-every-minute': {
-        'task': 'app.worker.check_campaigns_task',
-        'schedule': 60.0,
-    },
-}
+    celery_app.conf.update(
+        task_serializer='json',
+        accept_content=['json'],
+        result_serializer='json',
+        timezone='UTC',
+        enable_utc=True,
+        broker_connection_retry_on_startup=True
+    )
+
+    celery_app.conf.beat_schedule = {
+        'check-active-campaigns-every-minute': {
+            'task': 'app.worker.check_campaigns_task',
+            'schedule': 60.0,
+        },
+    }
+
+    _redis_client = redis.Redis.from_url(settings.REDIS_URL)
+    _PROFILE_LOCK_TTL = 300
 
 import asyncio
 import logging
-import redis
 from datetime import datetime, timezone
 from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
@@ -36,13 +42,7 @@ from app.bot.fingerprint_collector import collect_fingerprint, analyze_fingerpri
 
 logger = logging.getLogger(__name__)
 
-# Retry countdown: attempt 2 → 5s, attempt 3 → 10s, attempt 4 → 20s
 RETRY_COUNTDOWNS = [5, 10, 20]
-
-# Redis lock for profile-level mutual exclusion.
-# Only one task can use a given browser profile at a time.
-_redis_client = redis.Redis.from_url(settings.REDIS_URL)
-_PROFILE_LOCK_TTL = 300  # 5 minutes max
 
 
 async def _clear_queued_logs(db, group_id: int):
@@ -61,11 +61,8 @@ async def run_bot_task(profile_id: str, account_email: str, account_pass: str,
                        campaign_name: str = "",
                        backup_cookies: dict = None,
                        background_style: str = None):
-    """Async function invoked by Celery in a new event loop.
-
-    Connects to Donut Browser profile via nodriver (CDP), performs login + publish.
-    After success, extracts session cookies for backup in our DB.
-    """
+    """Async function: connects to Donut Browser profile via nodriver (CDP),
+    performs login + publish. Used by both Celery and standalone task runner."""
     async with AsyncSessionLocal() as db:
         try:
             manager = BrowserManager(profile_id)
@@ -91,7 +88,6 @@ async def run_bot_task(profile_id: str, account_email: str, account_pass: str,
                 status = "SUCCESS" if success else "FAILED"
                 error_msg = None if success else "Blad publikacji / brak uprawnien na grupie"
 
-                # Backup critical Facebook session cookies to our DB
                 cookies = await manager.extract_session_cookies(tab)
                 if cookies:
                     result = await db.execute(
@@ -128,58 +124,10 @@ async def run_bot_task(profile_id: str, account_email: str, account_pass: str,
             raise e
 
 
-@celery_app.task(name="app.worker.check_campaigns_task")
-def check_campaigns_task():
-    """Triggered by Celery Beat every minute."""
-    from app.core.scheduler import run_campaign_scheduler
-    run_campaign_scheduler()
-
-
-@celery_app.task(
-    name="app.worker.publish_post_task",
-    bind=True,
-    max_retries=3,
-)
-def publish_post_task(self, profile_id: str, account_email: str, account_pass: str,
-                      group_url: str, post_content: str, group_id: int,
-                      campaign_name: str = "",
-                      backup_cookies: dict = None,
-                      background_style: str = None):
-    """Sync Celery entry point — delegates to async nodriver code."""
-    # Acquire per-profile Redis lock to prevent concurrent browser sessions.
-    # Use longer blocking_timeout to wait for the other task to finish
-    # instead of consuming retry attempts.
-    lock_key = f"sosm:profile_lock:{profile_id}"
-    lock = _redis_client.lock(lock_key, timeout=_PROFILE_LOCK_TTL, blocking_timeout=120)
-    if not lock.acquire(blocking=True):
-        logger.warning("Profile %s still locked after 120s, skipping", profile_id)
-        return None
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        return loop.run_until_complete(
-            run_bot_task(profile_id, account_email, account_pass,
-                         group_url, post_content, group_id, campaign_name,
-                         backup_cookies, background_style)
-        )
-    except Exception as exc:
-        retry_num = self.request.retries
-        countdown = RETRY_COUNTDOWNS[retry_num] if retry_num < len(RETRY_COUNTDOWNS) else 20
-        raise self.retry(exc=exc, countdown=countdown)
-    finally:
-        try:
-            lock.release()
-        except redis.exceptions.LockNotOwnedError:
-            pass  # Lock expired (TTL) while task was running
-
-
 async def run_fingerprint_collection(test_id: int, profile_id: str = None,
                                       visit_external_sites: bool = False):
     """Async: connect to Donut Browser profile, collect fingerprint, analyze, store results."""
+    import os
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(FingerprintTest).where(FingerprintTest.id == test_id)
@@ -191,7 +139,6 @@ async def run_fingerprint_collection(test_id: int, profile_id: str = None,
         fp_test.status = "RUNNING"
         await db.commit()
 
-        # Use a dedicated fingerprint test profile if provided
         fp_profile_id = profile_id or settings.FINGERPRINT_PROFILE_ID
 
         try:
@@ -209,6 +156,8 @@ async def run_fingerprint_collection(test_id: int, profile_id: str = None,
                 }
 
                 if visit_external_sites:
+                    screenshot_dir = os.path.join(settings.DATA_DIR, "screenshots")
+                    os.makedirs(screenshot_dir, exist_ok=True)
                     external_sites = [
                         ("browserleaks", "https://browserleaks.com/canvas"),
                         ("pixelscan", "https://pixelscan.net/"),
@@ -218,7 +167,7 @@ async def run_fingerprint_collection(test_id: int, profile_id: str = None,
                         try:
                             await tab.get(url)
                             await asyncio.sleep(8)
-                            screenshot_path = f"/app/screenshots/fp_{test_id}_{site_key}.png"
+                            screenshot_path = os.path.join(screenshot_dir, f"fp_{test_id}_{site_key}.png")
                             await tab.save_screenshot(screenshot_path)
                             results["external_sites"][site_key] = {
                                 "url": url,
@@ -247,15 +196,61 @@ async def run_fingerprint_collection(test_id: int, profile_id: str = None,
             raise e
 
 
-@celery_app.task(name="app.worker.run_fingerprint_test_task")
-def run_fingerprint_test_task(test_id: int, profile_id: str = None,
-                               visit_external_sites: bool = False):
-    """Sync Celery entry point for fingerprint test."""
-    loop = asyncio.get_event_loop()
-    if loop.is_closed():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+# Celery task wrappers (Docker mode only)
+if not settings.STANDALONE:
+    @celery_app.task(name="app.worker.check_campaigns_task")
+    def check_campaigns_task():
+        """Triggered by Celery Beat every minute."""
+        from app.core.scheduler import run_campaign_scheduler
+        run_campaign_scheduler()
 
-    loop.run_until_complete(
-        run_fingerprint_collection(test_id, profile_id, visit_external_sites)
+    @celery_app.task(
+        name="app.worker.publish_post_task",
+        bind=True,
+        max_retries=3,
     )
+    def publish_post_task(self, profile_id: str, account_email: str, account_pass: str,
+                          group_url: str, post_content: str, group_id: int,
+                          campaign_name: str = "",
+                          backup_cookies: dict = None,
+                          background_style: str = None):
+        """Sync Celery entry point — delegates to async nodriver code."""
+        lock_key = f"sosm:profile_lock:{profile_id}"
+        lock = _redis_client.lock(lock_key, timeout=_PROFILE_LOCK_TTL, blocking_timeout=120)
+        if not lock.acquire(blocking=True):
+            logger.warning("Profile %s still locked after 120s, skipping", profile_id)
+            return None
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+            return loop.run_until_complete(
+                run_bot_task(profile_id, account_email, account_pass,
+                             group_url, post_content, group_id, campaign_name,
+                             backup_cookies, background_style)
+            )
+        except Exception as exc:
+            retry_num = self.request.retries
+            countdown = RETRY_COUNTDOWNS[retry_num] if retry_num < len(RETRY_COUNTDOWNS) else 20
+            raise self.retry(exc=exc, countdown=countdown)
+        finally:
+            try:
+                lock.release()
+            except redis.exceptions.LockNotOwnedError:
+                pass
+
+    @celery_app.task(name="app.worker.run_fingerprint_test_task")
+    def run_fingerprint_test_task(test_id: int, profile_id: str = None,
+                                   visit_external_sites: bool = False):
+        """Sync Celery entry point for fingerprint test."""
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        loop.run_until_complete(
+            run_fingerprint_collection(test_id, profile_id, visit_external_sites)
+        )

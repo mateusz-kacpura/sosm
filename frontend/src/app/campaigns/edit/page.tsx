@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
-import { useRouter, useParams } from "next/navigation"
+import { Suspense, useEffect, useState, useCallback } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -11,12 +11,20 @@ import { api } from "@/lib/api"
 import {
   GroupRow, SpreadsheetRow, SpreadsheetHeader, ScheduleGenerator,
   DEFAULT_COL_WIDTHS, MIN_COL_WIDTHS, SortDir,
-} from "../../spreadsheet"
+} from "../spreadsheet"
 
 export default function EditCampaignPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div>}>
+      <EditCampaignInner />
+    </Suspense>
+  )
+}
+
+function EditCampaignInner() {
   const router = useRouter()
-  const params = useParams()
-  const campaignId = Number(params.id)
+  const searchParams = useSearchParams()
+  const campaignId = Number(searchParams.get("id"))
 
   const [loading, setLoading] = useState(true)
   const [accounts, setAccounts] = useState<any[]>([])
@@ -34,7 +42,6 @@ export default function EditCampaignPage() {
 
   const pad = (n: number) => n.toString().padStart(2, "0")
 
-  // Load campaign data
   useEffect(() => {
     async function load() {
       try {
@@ -55,7 +62,6 @@ export default function EditCampaignPage() {
         setName(campaign.name)
         setAccountId(String(campaign.account_id))
 
-        // Convert groups to GroupRow format
         const rows: GroupRow[] = groupsData.map((g: any) => {
           let planned_date = ""
           let planned_time = ""
@@ -154,12 +160,8 @@ export default function EditCampaignPage() {
     setSubmitting(true)
     setError(null)
     try {
-      // Update campaign metadata
-      await api.campaigns.update(campaignId, {
-        name,
-      })
+      await api.campaigns.update(campaignId, { name })
 
-      // Replace all groups
       const groups = groupRows
         .filter(g => g.url.trim())
         .map(g => {
@@ -194,7 +196,6 @@ export default function EditCampaignPage() {
 
   const content = (
     <div className={fullscreen ? "h-screen flex flex-col bg-background" : "space-y-6"}>
-      {/* Header */}
       <div className={`flex items-center justify-between ${fullscreen ? "px-6 py-4 border-b border-primary/10 shrink-0" : ""}`}>
         <div className="flex items-center gap-4">
           <Button
@@ -229,7 +230,6 @@ export default function EditCampaignPage() {
       )}
 
       <form onSubmit={handleSubmit} className={fullscreen ? "flex flex-col flex-1 min-h-0" : "space-y-6"}>
-        {/* Basic info */}
         <div className={fullscreen ? "px-6 py-3 border-b border-primary/10 shrink-0" : ""}>
           {fullscreen ? (
             <div className="flex items-center gap-4">
@@ -297,7 +297,6 @@ export default function EditCampaignPage() {
           )}
         </div>
 
-        {/* Spreadsheet */}
         <div className={fullscreen ? "flex flex-col flex-1 min-h-0" : ""}>
           {fullscreen ? (
             <div className="flex flex-col flex-1 min-h-0">

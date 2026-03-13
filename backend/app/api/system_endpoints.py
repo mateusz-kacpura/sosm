@@ -1,5 +1,11 @@
 import asyncio
+import json
 import logging
+import os
+import platform
+import signal
+import subprocess
+import time
 from functools import partial
 
 from fastapi import APIRouter, HTTPException
@@ -19,7 +25,6 @@ def _get_donut_client() -> DonutClient:
 
 
 def _check_redis(celery_app) -> bool:
-    """Sync: ping Redis via Celery broker connection."""
     try:
         conn = celery_app.connection()
         conn.connect()
@@ -30,7 +35,6 @@ def _check_redis(celery_app) -> bool:
 
 
 def _check_celery_worker(celery_app) -> dict | None:
-    """Sync: ping Celery workers via inspect API."""
     try:
         inspector = celery_app.control.inspect(timeout=3.0)
         return inspector.ping()
@@ -40,51 +44,59 @@ def _check_celery_worker(celery_app) -> dict | None:
 
 @router.get("/status")
 async def system_status():
-    """Health check for all services: DB, Redis, Celery Worker, Donut Browser."""
+    """Health check for all services."""
     results = {}
 
     # DB
     try:
         async with AsyncSessionLocal() as db:
             await db.execute(text("SELECT 1"))
-        results["database"] = {"status": "ok", "detail": "Polaczenie aktywne"}
+        db_type = "SQLite" if settings.STANDALONE else "PostgreSQL"
+        results["database"] = {"status": "ok", "detail": f"{db_type} — polaczenie aktywne"}
     except Exception as e:
         results["database"] = {"status": "error", "detail": str(e)}
 
-    # Redis
-    try:
-        from app.worker import celery_app
-        loop = asyncio.get_event_loop()
-        redis_ok = await loop.run_in_executor(
-            None, partial(_check_redis, celery_app)
-        )
-        if redis_ok:
-            results["redis"] = {"status": "ok", "detail": "Ping OK"}
-        else:
-            results["redis"] = {"status": "error", "detail": "Brak odpowiedzi"}
-    except Exception as e:
-        results["redis"] = {"status": "error", "detail": str(e)}
+    if settings.STANDALONE:
+        from app.task_runner import get_active_task_count
+        results["task_runner"] = {
+            "status": "ok",
+            "detail": f"Aktywne zadania: {get_active_task_count()}",
+        }
+    else:
+        # Redis
+        try:
+            from app.worker import celery_app
+            loop = asyncio.get_event_loop()
+            redis_ok = await loop.run_in_executor(
+                None, partial(_check_redis, celery_app)
+            )
+            if redis_ok:
+                results["redis"] = {"status": "ok", "detail": "Ping OK"}
+            else:
+                results["redis"] = {"status": "error", "detail": "Brak odpowiedzi"}
+        except Exception as e:
+            results["redis"] = {"status": "error", "detail": str(e)}
 
-    # Celery Worker
-    try:
-        from app.worker import celery_app
-        loop = asyncio.get_event_loop()
-        worker_info = await loop.run_in_executor(
-            None, partial(_check_celery_worker, celery_app)
-        )
-        if worker_info:
-            results["celery_worker"] = {
-                "status": "ok",
-                "detail": f"Aktywne workery: {len(worker_info)}",
-                "workers": list(worker_info.keys()),
-            }
-        else:
-            results["celery_worker"] = {
-                "status": "error",
-                "detail": "Brak aktywnych workerow",
-            }
-    except Exception as e:
-        results["celery_worker"] = {"status": "error", "detail": str(e)}
+        # Celery Worker
+        try:
+            from app.worker import celery_app
+            loop = asyncio.get_event_loop()
+            worker_info = await loop.run_in_executor(
+                None, partial(_check_celery_worker, celery_app)
+            )
+            if worker_info:
+                results["celery_worker"] = {
+                    "status": "ok",
+                    "detail": f"Aktywne workery: {len(worker_info)}",
+                    "workers": list(worker_info.keys()),
+                }
+            else:
+                results["celery_worker"] = {
+                    "status": "error",
+                    "detail": "Brak aktywnych workerow",
+                }
+        except Exception as e:
+            results["celery_worker"] = {"status": "error", "detail": str(e)}
 
     # Donut Browser
     try:
@@ -110,7 +122,6 @@ async def system_status():
 
 @router.get("/donut/profiles")
 async def list_donut_profiles():
-    """Proxy: list all Donut Browser profiles."""
     try:
         client = _get_donut_client()
         return await client.list_profiles()
@@ -122,7 +133,6 @@ async def list_donut_profiles():
 
 @router.post("/donut/profiles/{profile_id}/run")
 async def run_donut_profile(profile_id: str):
-    """Proxy: start a Donut Browser profile (no jitter)."""
     try:
         client = _get_donut_client()
         return await client.start_profile_immediate(profile_id)
@@ -134,7 +144,6 @@ async def run_donut_profile(profile_id: str):
 
 @router.post("/donut/profiles/{profile_id}/kill")
 async def kill_donut_profile(profile_id: str):
-    """Proxy: stop a Donut Browser profile."""
     try:
         client = _get_donut_client()
         await client.stop_profile(profile_id)
@@ -143,3 +152,145 @@ async def kill_donut_profile(profile_id: str):
         raise HTTPException(status_code=502, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Donut Browser niedostepny: {e}")
+
+
+# --- Host agent endpoints (standalone: merged into main API) ---
+
+def _donut_binary_path() -> str:
+    if platform.system() == "Windows":
+        return os.path.join(
+            os.environ.get('LOCALAPPDATA', ''),
+            'Programs', 'donut-browser', 'Donut.exe',
+        )
+    return "/usr/bin/donutbrowser"
+
+
+def _daemon_state_path() -> str:
+    if platform.system() == "Windows":
+        return os.path.join(
+            os.environ.get('APPDATA', ''),
+            'donutbrowser', 'daemon-state.json',
+        )
+    return os.path.expanduser("~/.local/share/donutbrowser/daemon-state.json")
+
+
+def _is_pid_alive(pid: int) -> bool:
+    if platform.system() == "Windows":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return str(pid) in result.stdout
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def _get_daemon_pid() -> int | None:
+    try:
+        with open(_daemon_state_path()) as f:
+            data = json.load(f)
+        pid = data.get("daemon_pid")
+        if pid and _is_pid_alive(int(pid)):
+            return int(pid)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
+@router.get("/host/status")
+async def host_status():
+    daemon_pid = _get_daemon_pid()
+    donut_api_ok = False
+    if daemon_pid:
+        try:
+            client = _get_donut_client()
+            donut_api_ok = await client.check_health()
+        except Exception:
+            pass
+
+    result = {
+        "donut_daemon": {
+            "running": daemon_pid is not None,
+            "pid": daemon_pid,
+            "api_available": donut_api_ok,
+        },
+    }
+
+    if settings.STANDALONE:
+        from app.task_runner import get_active_task_count
+        result["task_runner"] = {
+            "running": True,
+            "active_tasks": get_active_task_count(),
+        }
+
+    return result
+
+
+@router.post("/host/donut/start")
+async def start_donut():
+    daemon_pid = _get_daemon_pid()
+    if daemon_pid:
+        try:
+            client = _get_donut_client()
+            if await client.check_health():
+                return {"status": "already_running", "pid": daemon_pid, "api_available": True}
+        except Exception:
+            pass
+
+    gui_binary = _donut_binary_path()
+    if not os.path.isfile(gui_binary):
+        return {"status": "error", "detail": f"Nie znaleziono {gui_binary}"}
+
+    try:
+        if platform.system() == "Windows":
+            subprocess.Popen(
+                [gui_binary],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+        else:
+            subprocess.Popen(
+                [gui_binary],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+        for _ in range(15):
+            await asyncio.sleep(2)
+            try:
+                client = _get_donut_client()
+                if await client.check_health():
+                    return {"status": "started", "pid": _get_daemon_pid(), "api_available": True}
+            except Exception:
+                continue
+
+        return {"status": "started", "pid": _get_daemon_pid(), "api_available": False,
+                "detail": "GUI uruchomiony, ale API nie odpowiada."}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+@router.post("/host/donut/stop")
+async def stop_donut():
+    daemon_pid = _get_daemon_pid()
+    if not daemon_pid:
+        return {"status": "not_running"}
+
+    try:
+        if platform.system() == "Windows":
+            subprocess.run(["taskkill", "/PID", str(daemon_pid), "/F"],
+                           capture_output=True, timeout=5)
+        else:
+            os.kill(daemon_pid, signal.SIGTERM)
+            time.sleep(1)
+            if _is_pid_alive(daemon_pid):
+                os.kill(daemon_pid, signal.SIGKILL)
+        return {"status": "stopped"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
