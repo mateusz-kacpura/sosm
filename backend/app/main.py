@@ -83,7 +83,7 @@ if settings.STANDALONE:
         if os.path.isdir(_next_dir):
             app.mount("/_next", StaticFiles(directory=_next_dir), name="next_assets")
 
-        @app.get("/{path:path}")
+        @app.api_route("/{path:path}", methods=["GET", "HEAD"])
         async def serve_frontend(request: Request, path: str = ""):
             """Serve Next.js static export files with .html fallback."""
             # Try exact file first (e.g. favicon.ico, file.svg)
