@@ -28,8 +28,21 @@ logger = logging.getLogger(__name__)
 
 def open_browser_delayed(url: str, delay: float = 3.0):
     import time
+    import subprocess
+    import shutil
     time.sleep(delay)
-    webbrowser.open(url)
+    try:
+        webbrowser.open(url)
+    except Exception:
+        # Fallback: try common browsers directly (fixes XFCE/minimal Linux)
+        for browser in ("xdg-open", "firefox", "chromium", "chromium-browser", "google-chrome"):
+            if shutil.which(browser):
+                try:
+                    subprocess.Popen([browser, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return
+                except Exception:
+                    continue
+        logger.info("Open SOSM panel manually: %s", url)
 
 
 def _get_data_dir() -> str:
