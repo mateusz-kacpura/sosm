@@ -31,8 +31,12 @@ class Settings(BaseSettings):
     def DATA_DIR(self) -> str:
         if self.STANDALONE:
             if getattr(sys, 'frozen', False):
-                # Running as PyInstaller .exe
-                return os.path.join(os.environ.get('APPDATA', '.'), 'SOSM')
+                # Running as PyInstaller binary
+                if sys.platform == 'win32':
+                    base = os.environ.get('APPDATA', os.path.expanduser('~'))
+                else:
+                    base = os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share'))
+                return os.path.join(base, 'SOSM')
             return os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'sosm_data')
         return "."
 
