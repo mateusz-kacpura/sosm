@@ -1,5 +1,5 @@
-const API_BASE_URL = "http://localhost:8010/api"
-const HOST_AGENT_URL = "http://localhost:8010/api/system"
+const API_BASE_URL = "/api"
+const HOST_AGENT_URL = "/api/system"
 
 export async function fetchApi(endpoint: string, options: RequestInit = {}) {
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
