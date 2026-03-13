@@ -1,0 +1,66 @@
+name: Build Linux binary
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [windows]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Frontend build ──
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build static frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Verify frontend output
+        run: |
+          test -f frontend/out/index.html || { echo "frontend/out/index.html not found"; exit 1; }
+          echo "Frontend built successfully"
+          ls frontend/out/ | head -15
+
+      # ── Backend build ──
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run PyInstaller
+        run: pyinstaller sosm.spec --noconfirm
+
+      - name: Verify build output
+        run: |
+          test -f dist/SOSM/SOSM || { echo "SOSM binary not found"; exit 1; }
+          chmod +x dist/SOSM/SOSM
+          SIZE=$(du -sh dist/SOSM/SOSM | cut -f1)
+          echo "SOSM binary size: $SIZE"
+          echo "Total dist size: $(du -sh dist/SOSM/ | cut -f1)"
+
+      # ── Upload artifact ──
+      - name: Upload SOSM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SOSM-Linux-x64
+          path: dist/SOSM/
+          retention-days: 30
