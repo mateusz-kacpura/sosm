@@ -31,7 +31,43 @@ def open_browser_delayed(url: str, delay: float = 3.0):
     webbrowser.open(url)
 
 
+def _get_data_dir() -> str:
+    """Compute DATA_DIR before settings are loaded (to load .env from it)."""
+    if getattr(sys, 'frozen', False):
+        if sys.platform == 'win32':
+            base = os.environ.get('APPDATA', os.path.expanduser('~'))
+        else:
+            base = os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share'))
+        return os.path.join(base, 'SOSM')
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backend', 'sosm_data')
+
+
 def main():
+    # Load .env from DATA_DIR before importing settings
+    data_dir = _get_data_dir()
+    os.makedirs(data_dir, exist_ok=True)
+
+    env_file = os.path.join(data_dir, ".env")
+    if os.path.isfile(env_file):
+        logger.info("Loading config from %s", env_file)
+        with open(env_file) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    key, value = key.strip(), value.strip().strip('"').strip("'")
+                    if key not in os.environ:  # don't override explicit env vars
+                        os.environ[key] = value
+    else:
+        # Create template .env for user to fill in
+        with open(env_file, "w") as f:
+            f.write("# SOSM Configuration\n")
+            f.write("# Get the API token from Donut Browser → Settings → Local REST API\n")
+            f.write("DONUT_API_TOKEN=\n")
+            f.write("# Optional: explicit path to Donut Browser binary\n")
+            f.write("# DONUT_BINARY_PATH=/usr/bin/donutbrowser\n")
+        logger.info("Created config template at %s — edit to set DONUT_API_TOKEN", env_file)
+
     import uvicorn
     from app.core.config import settings
 

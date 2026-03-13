@@ -157,21 +157,60 @@ async def kill_donut_profile(profile_id: str):
 # --- Host agent endpoints (standalone: merged into main API) ---
 
 def _donut_binary_path() -> str:
+    # Allow explicit override via env var
+    custom = os.environ.get("DONUT_BINARY_PATH")
+    if custom and os.path.isfile(custom):
+        return custom
+
     if platform.system() == "Windows":
-        return os.path.join(
-            os.environ.get('LOCALAPPDATA', ''),
-            'Programs', 'donut-browser', 'Donut.exe',
-        )
-    return "/usr/bin/donutbrowser"
+        candidates = [
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'donut-browser', 'Donut.exe'),
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'donutbrowser', 'DonutBrowser.exe'),
+        ]
+    else:
+        candidates = [
+            "/usr/bin/donutbrowser",
+            "/usr/local/bin/donutbrowser",
+            os.path.expanduser("~/donutbrowser/donutbrowser"),
+            os.path.expanduser("~/.local/bin/donutbrowser"),
+        ]
+        # Search for AppImage or extracted archives in common locations
+        for search_dir in [os.path.expanduser("~"), "/opt"]:
+            try:
+                for entry in os.scandir(search_dir):
+                    if entry.is_dir() and "donut" in entry.name.lower():
+                        for name in ("donutbrowser", "DonutBrowser", "donut-browser"):
+                            p = os.path.join(entry.path, name)
+                            if os.path.isfile(p):
+                                candidates.append(p)
+            except (PermissionError, OSError):
+                pass
+
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    # Fallback to first candidate (will produce clear error message)
+    return candidates[0] if candidates else "donutbrowser"
 
 
 def _daemon_state_path() -> str:
     if platform.system() == "Windows":
-        return os.path.join(
-            os.environ.get('APPDATA', ''),
-            'donutbrowser', 'daemon-state.json',
-        )
-    return os.path.expanduser("~/.local/share/donutbrowser/daemon-state.json")
+        candidates = [
+            os.path.join(os.environ.get('APPDATA', ''), 'donutbrowser', 'daemon-state.json'),
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), 'donutbrowser', 'daemon-state.json'),
+        ]
+    else:
+        xdg = os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share'))
+        candidates = [
+            os.path.join(xdg, 'donutbrowser', 'daemon-state.json'),
+            os.path.expanduser('~/.donutbrowser/daemon-state.json'),
+            os.path.expanduser('~/.config/donutbrowser/daemon-state.json'),
+        ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    # Return default (first candidate)
+    return candidates[0]
 
 
 def _is_pid_alive(pid: int) -> bool:

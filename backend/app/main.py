@@ -63,6 +63,20 @@ async def startup_event():
         scheduler.start()
         logger.info("APScheduler started (campaign checker every 60s)")
 
+        # Log Donut Browser connectivity
+        try:
+            from app.bot.donut_client import DonutClient
+            client = DonutClient(settings.DONUT_API_URL, settings.DONUT_API_TOKEN)
+            if await client.check_health():
+                logger.info("Donut Browser API connected at %s", settings.DONUT_API_URL)
+            else:
+                logger.warning("Donut Browser API not responding at %s — start Donut Browser first", settings.DONUT_API_URL)
+        except Exception as e:
+            logger.warning("Donut Browser API check failed: %s", e)
+
+        if not settings.DONUT_API_TOKEN:
+            logger.warning("DONUT_API_TOKEN is not set — edit %s/.env", settings.DATA_DIR)
+
 
 @app.get("/health")
 async def health_check():
