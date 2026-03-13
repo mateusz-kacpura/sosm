@@ -80,6 +80,14 @@ class TaskLog(Base):
     group = relationship("Group", back_populates="task_logs")
 
 
+class AppAuth(Base):
+    __tablename__ = "app_auth"
+
+    id = Column(Integer, primary_key=True, index=True)
+    password_hash = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class FingerprintTest(Base):
     __tablename__ = "fingerprint_tests"
 

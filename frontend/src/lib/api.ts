@@ -4,11 +4,17 @@ const HOST_AGENT_URL = "/api/system"
 export async function fetchApi(endpoint: string, options: RequestInit = {}) {
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
     ...options,
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...options.headers,
     },
   })
+
+  if (response.status === 401) {
+    window.location.reload()
+    throw new Error("Session expired")
+  }
 
   if (!response.ok) {
     throw new Error(`API Error: ${response.statusText}`)
@@ -20,11 +26,17 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
 async function fetchHostAgent(endpoint: string, options: RequestInit = {}) {
   const response = await fetch(`${HOST_AGENT_URL}${endpoint}`, {
     ...options,
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...options.headers,
     },
   })
+
+  if (response.status === 401) {
+    window.location.reload()
+    throw new Error("Session expired")
+  }
 
   if (!response.ok) {
     throw new Error(`Host Agent Error: ${response.statusText}`)

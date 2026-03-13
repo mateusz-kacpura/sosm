@@ -3,9 +3,11 @@ import sys
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.config import settings
+from app.core import security
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -16,7 +18,40 @@ app = FastAPI(
     version=settings.VERSION,
 )
 
-# CORS configuration
+# Auth middleware — protects /api/ when password is set
+class AuthMiddleware(BaseHTTPMiddleware):
+    OPEN_PATHS = frozenset({
+        "/api/auth/status",
+        "/api/auth/login",
+        "/api/auth/set-password",
+        "/api/auth/logout",
+        "/health",
+    })
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+
+        # Allow preflight, open paths, and non-API routes (frontend static)
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        if path in self.OPEN_PATHS or not path.startswith("/api/"):
+            return await call_next(request)
+
+        # No password configured — allow unrestricted access
+        if not security.password_is_set():
+            return await call_next(request)
+
+        # Require valid session
+        token = request.cookies.get(security.SESSION_COOKIE)
+        if token and security.validate_session(token):
+            return await call_next(request)
+
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+
+
+# Middleware order: AuthMiddleware added first (inner), CORS added second (outer)
+# This ensures CORS headers are set even on 401 responses
+app.add_middleware(AuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -31,7 +66,9 @@ app.add_middleware(
 
 from app.api.endpoints import router as api_router
 from app.api.system_endpoints import router as system_router
+from app.api.auth import router as auth_router
 
+app.include_router(auth_router, prefix="/api")
 app.include_router(api_router, prefix="/api")
 app.include_router(system_router, prefix="/api")
 
@@ -49,6 +86,9 @@ async def startup_event():
         from app.core.database import init_db
         await init_db()
         logger.info("SQLite database initialized at %s", settings.DATA_DIR)
+
+        # Check if password protection is active
+        await security.init_password_check()
 
         # Initialize async task runner
         from app import task_runner

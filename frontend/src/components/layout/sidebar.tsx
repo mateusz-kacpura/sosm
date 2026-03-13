@@ -12,6 +12,7 @@ import {
   LogOut
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useAuth } from "@/components/auth/auth-provider"
 
 const menuItems = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -24,6 +25,7 @@ const menuItems = [
 
 export function Sidebar() {
   const pathname = usePathname()
+  const { logout } = useAuth()
 
   return (
     <div className="flex h-screen w-64 flex-col border-r bg-card text-card-foreground">
@@ -39,8 +41,8 @@ export function Sidebar() {
               href={item.href}
               className={cn(
                 "flex items-center space-x-3 rounded-lg px-3 py-2 transition-colors",
-                isActive 
-                  ? "bg-primary text-primary-foreground font-medium" 
+                isActive
+                  ? "bg-primary text-primary-foreground font-medium"
                   : "hover:bg-secondary hover:text-foreground"
               )}
             >
@@ -51,10 +53,13 @@ export function Sidebar() {
         })}
       </nav>
       <div className="border-t p-4">
-        <div className="flex items-center space-x-3 px-3 py-2 text-muted-foreground hover:text-foreground cursor-pointer">
+        <button
+          onClick={logout}
+          className="flex w-full items-center space-x-3 rounded-lg px-3 py-2 text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
+        >
           <LogOut className="h-5 w-5" />
           <span>Wyloguj</span>
-        </div>
+        </button>
       </div>
     </div>
   )

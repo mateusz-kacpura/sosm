@@ -53,6 +53,8 @@ a = Analysis(
         'app.bot.checkpoint_detector',
         'app.bot.human_imitation',
         'app.bot.donut_auto_config',
+        'app.api.auth',
+        'app.core.security',
         'argon2',
         'argon2.low_level',
         'cryptography',
