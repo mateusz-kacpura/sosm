@@ -1,6 +1,7 @@
 """SOSM Standalone Launcher — entry point for the .exe.
 
 Double-click to start the SOSM panel. Opens browser automatically.
+Donut Browser API token is auto-configured (no manual setup needed).
 """
 import os
 import sys
@@ -32,7 +33,7 @@ def open_browser_delayed(url: str, delay: float = 3.0):
 
 
 def _get_data_dir() -> str:
-    """Compute DATA_DIR before settings are loaded (to load .env from it)."""
+    """Compute DATA_DIR before settings are loaded."""
     if getattr(sys, 'frozen', False):
         if sys.platform == 'win32':
             base = os.environ.get('APPDATA', os.path.expanduser('~'))
@@ -42,11 +43,8 @@ def _get_data_dir() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backend', 'sosm_data')
 
 
-def main():
-    # Load .env from DATA_DIR before importing settings
-    data_dir = _get_data_dir()
-    os.makedirs(data_dir, exist_ok=True)
-
+def _load_env_file(data_dir: str):
+    """Load .env from DATA_DIR (for DONUT_BINARY_PATH and other overrides)."""
     env_file = os.path.join(data_dir, ".env")
     if os.path.isfile(env_file):
         logger.info("Loading config from %s", env_file)
@@ -56,17 +54,37 @@ def main():
                 if line and not line.startswith("#") and "=" in line:
                     key, _, value = line.partition("=")
                     key, value = key.strip(), value.strip().strip('"').strip("'")
-                    if key not in os.environ:  # don't override explicit env vars
+                    if key not in os.environ:
                         os.environ[key] = value
-    else:
-        # Create template .env for user to fill in
-        with open(env_file, "w") as f:
-            f.write("# SOSM Configuration\n")
-            f.write("# Get the API token from Donut Browser → Settings → Local REST API\n")
-            f.write("DONUT_API_TOKEN=\n")
-            f.write("# Optional: explicit path to Donut Browser binary\n")
-            f.write("# DONUT_BINARY_PATH=/usr/bin/donutbrowser\n")
-        logger.info("Created config template at %s — edit to set DONUT_API_TOKEN", env_file)
+
+
+def _auto_configure_donut():
+    """Auto-detect Donut Browser API token (no manual config needed)."""
+    # Skip if user explicitly set the token
+    if os.environ.get("DONUT_API_TOKEN"):
+        logger.info("Using DONUT_API_TOKEN from environment")
+        return
+
+    try:
+        from app.bot.donut_auto_config import auto_configure
+        token = auto_configure()
+        if token:
+            os.environ["DONUT_API_TOKEN"] = token
+        else:
+            logger.warning("Donut Browser not configured — install and start it at least once")
+    except Exception as e:
+        logger.warning("Donut Browser auto-config failed: %s", e)
+
+
+def main():
+    data_dir = _get_data_dir()
+    os.makedirs(data_dir, exist_ok=True)
+
+    # Load optional .env overrides
+    _load_env_file(data_dir)
+
+    # Auto-configure Donut Browser API token
+    _auto_configure_donut()
 
     import uvicorn
     from app.core.config import settings
