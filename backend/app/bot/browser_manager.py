@@ -124,8 +124,15 @@ class BrowserManager:
         # Poll CDP endpoint until Donut Browser is ready to accept connections.
         await self._wait_for_cdp(host, port)
 
+        # nodriver's Config.__init__() always calls find_chrome_executable()
+        # even when connecting to an existing remote browser via host+port.
+        # On systems without Chrome/Chromium this raises FileNotFoundError.
+        # Passing any truthy path skips the search; the binary is never
+        # launched when host+port are set (nodriver uses connect_existing).
+        from app.api.system_endpoints import _donut_binary_path
         self._browser = await nodriver.Browser.create(
             browser_args=["--no-sandbox"],
+            browser_executable_path=_donut_binary_path(),
             host=host,
             port=port,
         )
