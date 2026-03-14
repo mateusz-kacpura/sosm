@@ -26,7 +26,7 @@ const CATEGORIES: { name: string; color: string; items: PaletteItem[] }[] = [
     color: "text-blue-400",
     items: [
       { type: "login", label: "Logowanie FB", icon: LogIn },
-      { type: "post_group", label: "Post na grupie", icon: FileText },
+      { type: "post_group", label: "Posty na grupach", icon: FileText },
       { type: "post_fanpage", label: "Post na fanpage", icon: FileText },
       { type: "like_page", label: "Polub stronę", icon: Heart },
       { type: "comment", label: "Komentarz", icon: MessageCircle },

@@ -72,10 +72,16 @@ class WorkflowExecutor:
                 logger.error("WorkflowRun %d not found", run_id)
                 return
 
-            # Load account if set
+            # Load account — from workflow.account_id or from Login node config
             account = None
-            if wf.account_id:
-                account = await db.get(Account, wf.account_id)
+            account_id = wf.account_id
+            if not account_id:
+                # Auto-detect from first login node in the graph
+                account_id = self._find_login_account_id(wf.graph_data)
+                if account_id:
+                    logger.info("Auto-detected account_id=%d from Login node config", account_id)
+            if account_id:
+                account = await db.get(Account, account_id)
 
             # Use graph snapshot from run (immutable)
             graph_data = run.graph_snapshot or wf.graph_data
@@ -325,6 +331,18 @@ class WorkflowExecutor:
         await db.commit()
         await db.refresh(ne)
         return ne
+
+    @staticmethod
+    def _find_login_account_id(graph_data: dict | None) -> int | None:
+        """Find account_id from the first Login node's config in the graph."""
+        if not graph_data:
+            return None
+        for node in graph_data.get("nodes", []):
+            if node.get("type") == "login":
+                account_id = node.get("data", {}).get("config", {}).get("account_id")
+                if account_id:
+                    return int(account_id)
+        return None
 
     @staticmethod
     def _parse_graph(graph_data: dict):

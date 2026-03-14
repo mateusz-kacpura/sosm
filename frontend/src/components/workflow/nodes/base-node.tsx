@@ -188,13 +188,15 @@ LoginNode.displayName = "LoginNode"
 
 export const PostGroupNode = memo(({ data, selected }: NodeProps) => {
   const d = data as WorkflowNodeData
+  const groupCount = d.config?.groups?.length || 0
+  const displayContent = d.config?.default_content || d.config?.content || ""
   return (
     <BaseNodeInner nodeType="post_group" data={d} selected={!!selected}>
-      {d.config?.group_url && (
-        <div className="truncate">{d.config.group_url}</div>
+      {groupCount > 0 && (
+        <div>{groupCount} {groupCount === 1 ? "grupa" : groupCount < 5 ? "grupy" : "grup"}</div>
       )}
-      {d.config?.content && (
-        <div className="truncate mt-0.5 italic">{d.config.content.slice(0, 40)}...</div>
+      {displayContent && (
+        <div className="truncate mt-0.5 italic">{displayContent.slice(0, 40)}{displayContent.length > 40 ? "..." : ""}</div>
       )}
     </BaseNodeInner>
   )

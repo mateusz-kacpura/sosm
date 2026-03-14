@@ -4,9 +4,10 @@ import { useCallback, useEffect, useState } from "react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
-import { X } from "lucide-react"
+import { X, Calendar, FileText } from "lucide-react"
 import type { Node } from "@xyflow/react"
 import type { WorkflowNodeData } from "./nodes/base-node"
+import { GroupScheduleModal, type PostGroupsConfig } from "./group-schedule-modal"
 
 interface NodeConfigPanelProps {
   node: Node<WorkflowNodeData> | null
@@ -18,6 +19,7 @@ interface NodeConfigPanelProps {
 export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfigPanelProps) {
   const [config, setConfig] = useState<Record<string, any>>({})
   const [label, setLabel] = useState("")
+  const [showScheduleModal, setShowScheduleModal] = useState(false)
 
   useEffect(() => {
     if (node) {
@@ -86,36 +88,73 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
           </div>
         )}
 
-        {/* Post on Group */}
+        {/* Post on Groups (multi-group with schedule) */}
         {type === "post_group" && (
           <>
-            <div className="space-y-1">
-              <Label className="text-xs">URL grupy</Label>
-              <Input
-                value={config.group_url || ""}
-                onChange={(e) => updateField("group_url", e.target.value)}
-                placeholder="https://facebook.com/groups/..."
-                className="h-8 text-xs"
-              />
+            {/* Summary */}
+            <div className="space-y-2 border border-primary/10 rounded-lg p-2.5 bg-secondary/30">
+              <div className="flex items-center gap-2 text-xs">
+                <Calendar className="h-3.5 w-3.5 text-primary" />
+                <span className="font-medium">
+                  {(config.groups?.length || 0)}{" "}
+                  {(config.groups?.length || 0) === 1 ? "grupa" : (config.groups?.length || 0) < 5 ? "grupy" : "grup"}
+                </span>
+                {(config.groups || []).filter((g: any) => g.recurring).length > 0 && (
+                  <span className="text-primary text-[10px]">
+                    · {(config.groups || []).filter((g: any) => g.recurring).length} cyklicznych
+                  </span>
+                )}
+              </div>
+              {config.default_content && (
+                <div className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <FileText className="h-3 w-3 mt-0.5 shrink-0" />
+                  <span className="truncate">{config.default_content.slice(0, 60)}{config.default_content.length > 60 ? "..." : ""}</span>
+                </div>
+              )}
+              {config.background_style && (
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <span>Tlo:</span>
+                  <span className="font-mono">{config.background_style}</span>
+                </div>
+              )}
             </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Treść posta</Label>
-              <textarea
-                value={config.content || ""}
-                onChange={(e) => updateField("content", e.target.value)}
-                className="w-full rounded-md border border-input bg-secondary/50 px-2 py-1.5 text-xs min-h-[60px] resize-y"
-                placeholder="Treść posta..."
+
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-full"
+              onClick={() => setShowScheduleModal(true)}
+            >
+              <Calendar className="h-3.5 w-3.5 mr-1.5" />
+              Otworz harmonogram
+            </Button>
+
+            {showScheduleModal && (
+              <GroupScheduleModal
+                config={{
+                  groups: config.groups || [],
+                  default_content: config.default_content || "",
+                  background_style: config.background_style || "",
+                  active_hours_start: config.active_hours_start || "08:00",
+                  active_hours_end: config.active_hours_end || "20:00",
+                  spread_minutes: config.spread_minutes || 15,
+                }}
+                onSave={(newConfig: PostGroupsConfig) => {
+                  const merged = {
+                    ...config,
+                    groups: newConfig.groups,
+                    default_content: newConfig.default_content,
+                    background_style: newConfig.background_style,
+                    active_hours_start: newConfig.active_hours_start,
+                    active_hours_end: newConfig.active_hours_end,
+                    spread_minutes: newConfig.spread_minutes,
+                  }
+                  setConfig(merged)
+                  if (node) onUpdate(node.id, { config: merged })
+                }}
+                onClose={() => setShowScheduleModal(false)}
               />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Styl tła</Label>
-              <Input
-                value={config.background_style || ""}
-                onChange={(e) => updateField("background_style", e.target.value)}
-                placeholder="np. deco_5, red, black"
-                className="h-8 text-xs"
-              />
-            </div>
+            )}
           </>
         )}
 

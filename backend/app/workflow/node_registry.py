@@ -102,27 +102,106 @@ class LoginNode(BaseNode):
 
 class PostGroupNode(BaseNode):
     node_type = "post_group"
-    label = "Post na grupie"
+    label = "Posty na grupach"
     category = "facebook"
 
     async def execute(self, context: "ExecutionContext", config: dict) -> dict:
-        group_url = _resolve_var(config.get("group_url", ""), context.variables)
-        content = _resolve_var(config.get("content", ""), context.variables)
+        groups = config.get("groups", [])
+        default_content = _resolve_var(config.get("default_content", "") or config.get("content", ""), context.variables)
         bg_style = config.get("background_style") or None
 
         if not context.fb_actions:
             raise NodeExecutionError("No browser session")
 
-        success = await context.fb_actions.publish_on_group(group_url, content, bg_style)
-        context.variables["last_publish_result"] = "success" if success else "failed"
-        return {"success": success, "group_url": group_url}
+        # Backward compat: single group_url field
+        if not groups and config.get("group_url"):
+            groups = [{"url": config["group_url"]}]
+
+        if not groups:
+            raise NodeExecutionError("No groups configured")
+
+        # Filter groups by recurring schedule — skip if today is not a scheduled day
+        active_groups = _filter_scheduled_groups(groups)
+
+        results = []
+        completed = 0
+        failed = 0
+        skipped = 0
+
+        for i, group in enumerate(active_groups):
+            url = _resolve_var(group.get("url", ""), context.variables)
+            if not url:
+                continue
+
+            # Per-group content with fallback to default
+            group_content = group.get("content", "")
+            content = _resolve_var(group_content, context.variables) if group_content else default_content
+
+            # Wait until planned time if set (one-shot schedule)
+            planned_date = group.get("planned_date", "")
+            planned_time = group.get("planned_time", "")
+            if planned_date and planned_time:
+                await _wait_until_planned(planned_date, planned_time)
+
+            # For recurring groups, wait until recurring_time today (with jitter)
+            if group.get("recurring") and group.get("recurring_time"):
+                jitter_minutes = group.get("recurring_jitter", 0)
+                await _wait_until_recurring_time(group["recurring_time"], jitter_minutes)
+
+            try:
+                success = await context.fb_actions.publish_on_group(url, content, bg_style)
+                results.append({
+                    "url": url, "success": success,
+                    "recurring": group.get("recurring", False),
+                })
+                if success:
+                    completed += 1
+                else:
+                    failed += 1
+            except Exception as exc:
+                logger.error("Failed to post to group %s: %s", url, exc)
+                results.append({"url": url, "success": False, "error": str(exc)})
+                failed += 1
+
+            # Brief pause between groups to avoid rate limiting
+            if i < len(active_groups) - 1:
+                delay = random.uniform(3, 8)
+                logger.info("Pausing %.1fs between group posts", delay)
+                await asyncio.sleep(delay)
+
+        skipped = len(groups) - len(active_groups)
+
+        if len(active_groups) == 0:
+            logger.info("No groups active today (all %d skipped by schedule)", len(groups))
+            context.variables["last_publish_result"] = "skipped"
+            return {
+                "total": len(groups),
+                "active": 0,
+                "completed": 0,
+                "failed": 0,
+                "skipped": skipped,
+                "results": [],
+            }
+
+        context.variables["last_publish_result"] = "success" if failed == 0 else "partial" if completed > 0 else "failed"
+        return {
+            "total": len(groups),
+            "active": len(active_groups),
+            "completed": completed,
+            "failed": failed,
+            "skipped": skipped,
+            "results": results,
+        }
 
     def validate_config(self, config: dict) -> list[str]:
         errors = []
-        if not config.get("group_url"):
-            errors.append("URL grupy jest wymagany")
-        if not config.get("content"):
-            errors.append("Treść posta jest wymagana")
+        groups = config.get("groups", [])
+        if not groups and not config.get("group_url"):
+            errors.append("Dodaj przynajmniej jedna grupe")
+        # Content can be per-group or default
+        has_any_content = config.get("default_content") or config.get("content") or any(g.get("content") for g in groups)
+        if not has_any_content:
+            errors.append("Tresc posta jest wymagana (domyslna lub per grupa)")
         return errors
 
 
@@ -395,6 +474,72 @@ def get_node(node_type: str) -> BaseNode:
 
 
 # ── Helpers ──
+
+def _filter_scheduled_groups(groups: list[dict]) -> list[dict]:
+    """Filter groups to only those active today.
+
+    - Non-recurring groups: always included (their planned_date handles timing)
+    - Recurring groups: included only if today's weekday is in recurring_days
+      (0=Monday ... 6=Sunday, ISO weekday)
+    """
+    from datetime import datetime
+    today_weekday = datetime.now().weekday()  # 0=Monday ... 6=Sunday
+
+    active = []
+    for group in groups:
+        if not group.get("recurring"):
+            active.append(group)
+            continue
+        recurring_days = group.get("recurring_days", [])
+        if not recurring_days or today_weekday in recurring_days:
+            active.append(group)
+        else:
+            logger.debug(
+                "Skipping recurring group %s — today is %d, scheduled for %s",
+                group.get("url", "?"), today_weekday, recurring_days,
+            )
+    return active
+
+
+async def _wait_until_recurring_time(recurring_time: str, jitter_minutes: int = 0) -> None:
+    """Wait until the recurring_time (HH:MM) today, with random jitter.
+
+    jitter_minutes: max deviation in minutes (±).  E.g. 15 means the actual
+    publish time will be anywhere from -15 to +15 minutes around recurring_time.
+    """
+    from datetime import datetime, timedelta
+    try:
+        now = datetime.now()
+        h, m = map(int, recurring_time.split(":"))
+        target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+
+        # Apply random jitter
+        if jitter_minutes > 0:
+            offset = random.uniform(-jitter_minutes, jitter_minutes)
+            target += timedelta(minutes=offset)
+            logger.info("Recurring time %s with jitter ±%d min → target %s", recurring_time, jitter_minutes, target.strftime("%H:%M"))
+
+        wait_secs = (target - now).total_seconds()
+        if wait_secs > 0:
+            logger.info("Waiting %.0f seconds until recurring time", wait_secs)
+            await asyncio.sleep(wait_secs)
+    except (ValueError, TypeError) as exc:
+        logger.warning("Invalid recurring_time format (%s): %s", recurring_time, exc)
+
+
+async def _wait_until_planned(planned_date: str, planned_time: str) -> None:
+    """Wait until planned date+time before executing.  Skip if already past."""
+    from datetime import datetime
+    try:
+        target = datetime.strptime(f"{planned_date} {planned_time}", "%Y-%m-%d %H:%M")
+        now = datetime.now()
+        wait_secs = (target - now).total_seconds()
+        if wait_secs > 0:
+            logger.info("Waiting %.0f seconds until planned time %s %s", wait_secs, planned_date, planned_time)
+            await asyncio.sleep(wait_secs)
+    except (ValueError, TypeError) as exc:
+        logger.warning("Invalid planned time format (%s %s): %s", planned_date, planned_time, exc)
+
 
 def _resolve_var(template: str, variables: dict) -> str:
     """Resolve {{variable}} references in a string."""
