@@ -87,5 +87,21 @@ async def submit_fingerprint_task(
     task.add_done_callback(lambda t: _running_tasks.pop(task_key, None))
 
 
+async def submit_workflow_task(
+    workflow_id: int, run_id: int,
+    variables: dict = None, resume: bool = False,
+):
+    """Submit a workflow execution as an async task."""
+    from app.workflow.executor import WorkflowExecutor
+
+    executor = WorkflowExecutor()
+    task = asyncio.create_task(
+        executor.execute(workflow_id, run_id, variables, resume=resume)
+    )
+    task_key = f"workflow:{workflow_id}:{run_id}"
+    _running_tasks[task_key] = task
+    task.add_done_callback(lambda t: _running_tasks.pop(task_key, None))
+
+
 def get_active_task_count() -> int:
     return len(_running_tasks)

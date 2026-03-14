@@ -25,6 +25,7 @@ def event_loop():
 async def test_engine():
     from app.core.database import Base
     import app.models.models  # noqa: F401 - ensure models are registered on Base.metadata
+    import app.models.workflow_models  # noqa: F401 - workflow models
 
     engine = create_async_engine(
         TEST_DATABASE_URL,

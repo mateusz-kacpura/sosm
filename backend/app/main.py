@@ -67,10 +67,12 @@ app.add_middleware(
 from app.api.endpoints import router as api_router
 from app.api.system_endpoints import router as system_router
 from app.api.auth import router as auth_router
+from app.api.workflow_endpoints import router as workflow_router
 
 app.include_router(auth_router, prefix="/api")
 app.include_router(api_router, prefix="/api")
 app.include_router(system_router, prefix="/api")
+app.include_router(workflow_router, prefix="/api")
 
 
 @app.on_event("startup")
@@ -94,14 +96,19 @@ async def startup_event():
         from app import task_runner
         task_runner.init(max_concurrency=settings.BROWSER_CONCURRENCY)
 
+        # Resume interrupted workflow runs
+        from app.workflow.executor import WorkflowExecutor
+        await WorkflowExecutor().resume_interrupted_runs()
+
         # Start periodic campaign checker (replaces Celery Beat)
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
-        from app.core.scheduler import check_active_campaigns
+        from app.core.scheduler import check_active_campaigns, check_scheduled_workflows
 
         scheduler = AsyncIOScheduler()
         scheduler.add_job(check_active_campaigns, 'interval', seconds=60, id='campaign_checker')
+        scheduler.add_job(check_scheduled_workflows, 'interval', seconds=60, id='workflow_scheduler')
         scheduler.start()
-        logger.info("APScheduler started (campaign checker every 60s)")
+        logger.info("APScheduler started (campaign + workflow checkers every 60s)")
 
         # Auto-start Donut Browser daemon if not running
         try:
@@ -141,9 +148,17 @@ if settings.STANDALONE:
         if os.path.isdir(_next_dir):
             app.mount("/_next", StaticFiles(directory=_next_dir), name="next_assets")
 
-        @app.api_route("/{path:path}", methods=["GET", "HEAD"])
+        @app.api_route("/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
         async def serve_frontend(request: Request, path: str = ""):
             """Serve Next.js static export files with .html fallback."""
+            # Never intercept API or health routes — let FastAPI routers handle them
+            if path.startswith("api/") or path == "health":
+                return JSONResponse(status_code=404, content={"detail": "Not found"})
+
+            # Only serve frontend files for GET/HEAD requests
+            if request.method not in ("GET", "HEAD"):
+                return JSONResponse(status_code=405, content={"detail": "Method not allowed"})
+
             # Try exact file first (e.g. favicon.ico, file.svg)
             file_path = os.path.join(_frontend_dir, path)
             if os.path.isfile(file_path):

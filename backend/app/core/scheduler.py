@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime, timezone, timedelta
-from sqlalchemy import select
+from sqlalchemy import select, desc
 import logging
 
 from app.core.config import settings
@@ -134,6 +134,95 @@ async def check_active_campaigns():
                 campaign.status = "ZAKOŃCZONA"
                 await db.commit()
                 logger.info(f"Kampania {campaign.id} zakończona — wszystkie grupy opublikowane")
+
+
+async def check_scheduled_workflows():
+    """Check workflows with interval/cron scheduling and trigger runs when due."""
+    from app.models.workflow_models import Workflow, WorkflowRun
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Workflow).where(
+                Workflow.status == "AKTYWNY",
+                Workflow.schedule_type.isnot(None),
+                Workflow.schedule_type != "manual",
+            )
+        )
+        workflows = result.scalars().all()
+
+        now = datetime.now(timezone.utc)
+
+        for wf in workflows:
+            config = wf.schedule_config or {}
+
+            # Check if there's already a running/pending run
+            active_result = await db.execute(
+                select(WorkflowRun.id).where(
+                    WorkflowRun.workflow_id == wf.id,
+                    WorkflowRun.status.in_(["PENDING", "RUNNING"]),
+                )
+            )
+            if active_result.scalar_one_or_none():
+                continue
+
+            # Get last completed/failed run
+            last_run_result = await db.execute(
+                select(WorkflowRun)
+                .where(WorkflowRun.workflow_id == wf.id)
+                .order_by(desc(WorkflowRun.created_at))
+                .limit(1)
+            )
+            last_run = last_run_result.scalar_one_or_none()
+
+            should_run = False
+
+            if wf.schedule_type == "interval":
+                interval_minutes = config.get("interval_minutes", 60)
+                if not last_run:
+                    should_run = True
+                else:
+                    last_time = last_run.created_at
+                    if last_time.tzinfo is None:
+                        last_time = last_time.replace(tzinfo=timezone.utc)
+                    if now >= last_time + timedelta(minutes=interval_minutes):
+                        should_run = True
+
+            elif wf.schedule_type == "cron":
+                # Simple cron: use croniter if available, otherwise skip
+                try:
+                    from croniter import croniter
+                    cron_expr = config.get("cron", "0 */6 * * *")
+                    if last_run:
+                        last_time = last_run.created_at
+                        if last_time.tzinfo is None:
+                            last_time = last_time.replace(tzinfo=timezone.utc)
+                        cron = croniter(cron_expr, last_time)
+                        next_time = cron.get_next(datetime)
+                        if next_time.tzinfo is None:
+                            next_time = next_time.replace(tzinfo=timezone.utc)
+                        if now >= next_time:
+                            should_run = True
+                    else:
+                        should_run = True
+                except ImportError:
+                    logger.warning("croniter not installed — cron scheduling disabled for workflow %d", wf.id)
+
+            if should_run:
+                logger.info("Scheduling workflow %d (%s) — trigger: %s", wf.id, wf.name, wf.schedule_type)
+                run = WorkflowRun(
+                    workflow_id=wf.id,
+                    status="PENDING",
+                    trigger_type="scheduled",
+                    variables={},
+                    graph_snapshot=wf.graph_data,
+                )
+                db.add(run)
+                await db.commit()
+                await db.refresh(run)
+
+                if settings.STANDALONE:
+                    from app.task_runner import submit_workflow_task
+                    await submit_workflow_task(wf.id, run.id, {})
 
 
 def run_campaign_scheduler():

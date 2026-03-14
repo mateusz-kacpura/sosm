@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from app.models.models import Account, Campaign, Group, TaskLog, FingerprintTest
+from app.models.workflow_models import Workflow, WorkflowRun, WorkflowNodeExecution
 
 
 class AccountFactory:
@@ -64,6 +65,53 @@ class TaskLogFactory:
         }
         defaults.update(overrides)
         return TaskLog(**defaults)
+
+
+class WorkflowFactory:
+    _counter = 0
+
+    @classmethod
+    def create(cls, **overrides) -> Workflow:
+        cls._counter += 1
+        defaults = {
+            "name": f"Test Workflow {cls._counter}",
+            "description": "A test workflow",
+            "status": "SZKIC",
+            "graph_data": {
+                "nodes": [
+                    {"id": "node_1", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "Start", "config": {}}},
+                    {"id": "node_2", "type": "end", "position": {"x": 300, "y": 0}, "data": {"label": "Koniec", "config": {}}},
+                ],
+                "edges": [{"id": "e1-2", "source": "node_1", "target": "node_2"}],
+                "viewport": {"x": 0, "y": 0, "zoom": 1},
+            },
+        }
+        defaults.update(overrides)
+        return Workflow(**defaults)
+
+
+class WorkflowRunFactory:
+    @staticmethod
+    def create(**overrides) -> WorkflowRun:
+        defaults = {
+            "status": "PENDING",
+            "trigger_type": "manual",
+            "variables": {},
+        }
+        defaults.update(overrides)
+        return WorkflowRun(**defaults)
+
+
+class WorkflowNodeExecutionFactory:
+    @staticmethod
+    def create(**overrides) -> WorkflowNodeExecution:
+        defaults = {
+            "node_id": "node_1",
+            "node_type": "start",
+            "status": "PENDING",
+        }
+        defaults.update(overrides)
+        return WorkflowNodeExecution(**defaults)
 
 
 class FingerprintTestFactory:
