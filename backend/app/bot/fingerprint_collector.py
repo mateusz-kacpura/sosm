@@ -1,7 +1,5 @@
 import logging
 
-import nodriver.cdp.runtime
-
 logger = logging.getLogger(__name__)
 
 # Valid primary language codes (ISO 639-1)
@@ -230,55 +228,14 @@ FINGERPRINT_JS = """
 """
 
 
-async def collect_fingerprint(tab) -> dict:
-    """Navigate to about:blank and collect fingerprint data via JS evaluation.
+async def collect_fingerprint(page) -> dict:
+    """Navigate to about:blank and collect fingerprint data via Playwright.
 
-    Works with any browser automation library that supports .get() and .evaluate()
-    (nodriver Tab, Playwright Page, etc.).
+    Camoufox natively handles mediaDevices and deviceMemory spoofing,
+    so no polyfills are needed.
     """
-    await tab.get("about:blank")
-    # Use CDP Runtime.evaluate directly with return_by_value=True
-    # (nodriver's tab.evaluate() forces serialization_options="deep"
-    # which overrides returnByValue and returns unusable DeepSerializedValue).
-    #
-    # Prepend mediaDevices polyfill — Wayfern on Linux doesn't expose
-    # navigator.mediaDevices (no audio/video hw access). Real Chrome always
-    # has this API even without devices. The polyfill mimics a PC where the
-    # user denied media permissions.
-    polyfill_and_fingerprint = """
-    if (!navigator.mediaDevices) {
-        Object.defineProperty(navigator, 'mediaDevices', {
-            value: {
-                enumerateDevices: () => Promise.resolve([]),
-                getUserMedia: () => Promise.reject(
-                    new DOMException('Permission denied', 'NotAllowedError')
-                ),
-                getSupportedConstraints: () => ({})
-            },
-            writable: false,
-            configurable: true,
-            enumerable: true
-        });
-    }
-    if (!navigator.deviceMemory) {
-        Object.defineProperty(navigator, 'deviceMemory', {
-            value: 8,
-            writable: false,
-            configurable: true,
-            enumerable: true
-        });
-    }
-    """ + f"({FINGERPRINT_JS})()"
-    remote_object, errors = await tab.send(
-        nodriver.cdp.runtime.evaluate(
-            expression=polyfill_and_fingerprint,
-            return_by_value=True,
-            user_gesture=True,
-        )
-    )
-    if errors:
-        raise RuntimeError(f"Fingerprint JS evaluation error: {errors}")
-    raw_data = remote_object.value
+    await page.goto("about:blank")
+    raw_data = await page.evaluate(f"({FINGERPRINT_JS})()")
     return raw_data
 
 

@@ -3,8 +3,10 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import declarative_base
 from .config import settings
 
-# Engine configuration depends on standalone mode
-if settings.STANDALONE:
+# Engine configuration depends on database type
+_is_sqlite = "sqlite" in settings.DATABASE_URL
+
+if _is_sqlite:
     engine = create_async_engine(
         settings.DATABASE_URL,
         echo=False,
@@ -31,10 +33,10 @@ Base = declarative_base()
 
 
 async def init_db():
-    """Create all tables if they don't exist (standalone mode)."""
+    """Create all tables if they don't exist (SQLite standalone mode)."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        if settings.STANDALONE:
+        if _is_sqlite:
             await conn.execute(
                 __import__('sqlalchemy').text("PRAGMA journal_mode=WAL")
             )

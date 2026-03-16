@@ -25,6 +25,10 @@ if not settings.STANDALONE:
             'task': 'app.worker.check_campaigns_task',
             'schedule': 60.0,
         },
+        'check-scheduled-workflows-every-minute': {
+            'task': 'app.worker.check_workflows_task',
+            'schedule': 60.0,
+        },
     }
 
     _redis_client = redis.Redis.from_url(settings.REDIS_URL)
@@ -56,20 +60,20 @@ async def _clear_queued_logs(db, group_id: int):
     )
 
 
-async def run_bot_task(profile_id: str, account_email: str, account_pass: str,
+async def run_bot_task(account_id: int, account_email: str, account_pass: str,
                        group_url: str, post_content: str, group_id: int,
                        campaign_name: str = "",
                        backup_cookies: dict = None,
                        background_style: str = None):
-    """Async function: connects to Donut Browser profile via nodriver (CDP),
-    performs login + publish. Used by both Celery and standalone task runner."""
+    """Async function: starts Camoufox browser, performs login + publish.
+    Used by both Celery and standalone task runner."""
     async with AsyncSessionLocal() as db:
         try:
-            manager = BrowserManager(profile_id)
-            tab = await manager.start(backup_cookies=backup_cookies)
+            manager = BrowserManager(account_id)
+            page = await manager.start(backup_cookies=backup_cookies)
 
             try:
-                actions = FBActions(tab, account_email)
+                actions = FBActions(page, account_email)
 
                 is_logged = await actions.login(account_pass)
                 if not is_logged:
@@ -88,10 +92,10 @@ async def run_bot_task(profile_id: str, account_email: str, account_pass: str,
                 status = "SUCCESS" if success else "FAILED"
                 error_msg = None if success else "Blad publikacji / brak uprawnien na grupie"
 
-                cookies = await manager.extract_session_cookies(tab)
+                cookies = await manager.extract_session_cookies(page)
                 if cookies:
                     result = await db.execute(
-                        select(Account).where(Account.browser_profile_id == profile_id)
+                        select(Account).where(Account.id == account_id)
                     )
                     account = result.scalars().first()
                     if account:
@@ -124,9 +128,9 @@ async def run_bot_task(profile_id: str, account_email: str, account_pass: str,
             raise e
 
 
-async def run_fingerprint_collection(test_id: int, profile_id: str = None,
+async def run_fingerprint_collection(test_id: int, account_id: int = None,
                                       visit_external_sites: bool = False):
-    """Async: connect to Donut Browser profile, collect fingerprint, analyze, store results."""
+    """Async: start Camoufox browser, collect fingerprint, analyze, store results."""
     import os
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -139,14 +143,15 @@ async def run_fingerprint_collection(test_id: int, profile_id: str = None,
         fp_test.status = "RUNNING"
         await db.commit()
 
-        fp_profile_id = profile_id or settings.FINGERPRINT_PROFILE_ID
+        # Use provided account_id or fallback to a default fingerprint account
+        fp_account_id = account_id or settings.FINGERPRINT_ACCOUNT_ID
 
         try:
-            manager = BrowserManager(fp_profile_id)
-            tab = await manager.start()
+            manager = BrowserManager(fp_account_id)
+            page = await manager.start()
 
             try:
-                raw_data = await collect_fingerprint(tab)
+                raw_data = await collect_fingerprint(page)
                 analysis = analyze_fingerprint(raw_data)
 
                 results = {
@@ -165,10 +170,10 @@ async def run_fingerprint_collection(test_id: int, profile_id: str = None,
                     ]
                     for site_key, url in external_sites:
                         try:
-                            await tab.get(url)
+                            await page.goto(url)
                             await asyncio.sleep(8)
                             screenshot_path = os.path.join(screenshot_dir, f"fp_{test_id}_{site_key}.png")
-                            await tab.save_screenshot(screenshot_path)
+                            await page.screenshot(path=screenshot_path)
                             results["external_sites"][site_key] = {
                                 "url": url,
                                 "screenshot_path": screenshot_path,
@@ -209,16 +214,16 @@ if not settings.STANDALONE:
         bind=True,
         max_retries=3,
     )
-    def publish_post_task(self, profile_id: str, account_email: str, account_pass: str,
+    def publish_post_task(self, account_id: int, account_email: str, account_pass: str,
                           group_url: str, post_content: str, group_id: int,
                           campaign_name: str = "",
                           backup_cookies: dict = None,
                           background_style: str = None):
-        """Sync Celery entry point — delegates to async nodriver code."""
-        lock_key = f"sosm:profile_lock:{profile_id}"
+        """Sync Celery entry point — delegates to async Camoufox code."""
+        lock_key = f"sosm:account_lock:{account_id}"
         lock = _redis_client.lock(lock_key, timeout=_PROFILE_LOCK_TTL, blocking_timeout=120)
         if not lock.acquire(blocking=True):
-            logger.warning("Profile %s still locked after 120s, skipping", profile_id)
+            logger.warning("Account %s still locked after 120s, skipping", account_id)
             return None
 
         try:
@@ -228,7 +233,7 @@ if not settings.STANDALONE:
                 asyncio.set_event_loop(loop)
 
             return loop.run_until_complete(
-                run_bot_task(profile_id, account_email, account_pass,
+                run_bot_task(account_id, account_email, account_pass,
                              group_url, post_content, group_id, campaign_name,
                              backup_cookies, background_style)
             )
@@ -243,7 +248,7 @@ if not settings.STANDALONE:
                 pass
 
     @celery_app.task(name="app.worker.run_fingerprint_test_task")
-    def run_fingerprint_test_task(test_id: int, profile_id: str = None,
+    def run_fingerprint_test_task(test_id: int, account_id: int = None,
                                    visit_external_sites: bool = False):
         """Sync Celery entry point for fingerprint test."""
         loop = asyncio.get_event_loop()
@@ -252,5 +257,26 @@ if not settings.STANDALONE:
             asyncio.set_event_loop(loop)
 
         loop.run_until_complete(
-            run_fingerprint_collection(test_id, profile_id, visit_external_sites)
+            run_fingerprint_collection(test_id, account_id, visit_external_sites)
+        )
+
+    @celery_app.task(name="app.worker.check_workflows_task")
+    def check_workflows_task():
+        """Triggered by Celery Beat every minute — check scheduled workflows."""
+        from app.core.scheduler import run_workflow_scheduler
+        run_workflow_scheduler()
+
+    @celery_app.task(name="app.worker.run_workflow_task")
+    def run_workflow_task(workflow_id: int, run_id: int, variables: dict = None):
+        """Sync Celery entry point for workflow execution."""
+        from app.workflow.executor import WorkflowExecutor
+
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        executor = WorkflowExecutor()
+        loop.run_until_complete(
+            executor.execute(workflow_id, run_id, variables or {})
         )

@@ -26,10 +26,10 @@ class CheckpointDetector:
     ]
 
     @staticmethod
-    async def is_checkpoint_active(tab) -> bool:
+    async def is_checkpoint_active(page) -> bool:
         """Check if the current page shows a checkpoint/block."""
         try:
-            dom = DomWalker(tab)
+            dom = DomWalker(page)
 
             # Check text-based selectors
             for text in CheckpointDetector.CHECKPOINT_TEXTS:
@@ -46,7 +46,7 @@ class CheckpointDetector:
                     return True
 
             # Check URL
-            current_url = tab.url or ""
+            current_url = page.url or ""
             if "checkpoint" in current_url or "challenge" in current_url:
                 logger.warning("Wykryto URL z checkpointem: %s", current_url)
                 return True
@@ -57,15 +57,15 @@ class CheckpointDetector:
         return False
 
     @staticmethod
-    async def handle_checkpoint_if_needed(tab, screenshot_dir: str, account_email: str) -> bool:
+    async def handle_checkpoint_if_needed(page, screenshot_dir: str, account_email: str) -> bool:
         """If checkpoint detected, take screenshot and return True."""
-        if await CheckpointDetector.is_checkpoint_active(tab):
+        if await CheckpointDetector.is_checkpoint_active(page):
             await asyncio.sleep(2)
 
             os.makedirs(screenshot_dir, exist_ok=True)
             screenshot_path = os.path.join(screenshot_dir, f"checkpoint_{account_email}.png")
 
-            await tab.save_screenshot(screenshot_path)
+            await page.screenshot(path=screenshot_path)
             logger.error("Zapisano zrzut ekranu checkpointu w: %s", screenshot_path)
             return True
 

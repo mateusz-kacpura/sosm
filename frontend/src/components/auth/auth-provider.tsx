@@ -14,6 +14,8 @@ import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Lock, KeyRound, Shield } from "lucide-react"
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/api"
+
 interface AuthContextValue {
   authenticated: boolean
   logout: () => Promise<void>
@@ -35,7 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const checkAuth = useCallback(async () => {
     try {
-      const res = await fetch("/api/auth/status", { credentials: "include" })
+      const res = await fetch(`${API_BASE}/auth/status`, { credentials: "include" })
       const data = await res.json()
       setState({ ...data, loading: false })
     } catch {
@@ -48,7 +50,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [checkAuth])
 
   const logout = useCallback(async () => {
-    await fetch("/api/auth/logout", { method: "POST", credentials: "include" })
+    await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" })
     setState((prev) => ({ ...prev, authenticated: false }))
   }, [])
 
@@ -86,7 +88,7 @@ function LoginForm({ onSuccess }: { onSuccess: () => void }) {
     setLoading(true)
 
     try {
-      const res = await fetch("/api/auth/login", {
+      const res = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -166,7 +168,7 @@ function SetPasswordForm({ onSuccess }: { onSuccess: () => void }) {
     setLoading(true)
 
     try {
-      const res = await fetch("/api/auth/set-password", {
+      const res = await fetch(`${API_BASE}/auth/set-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

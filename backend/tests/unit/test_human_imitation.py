@@ -6,23 +6,21 @@ from app.bot.human_imitation import HumanImitation
 
 class TestTypeLikeHuman:
     async def test_types_each_character(self):
-        tab = AsyncMock()
-        tab.send = AsyncMock()
+        page = AsyncMock()
 
         with patch("app.bot.human_imitation.asyncio.sleep", new_callable=AsyncMock):
-            await HumanImitation.type_like_human(tab, "abc")
+            await HumanImitation.type_like_human(page, "abc")
 
-        # Each character generates keyDown + keyUp = 2 calls per char
-        assert tab.send.call_count == 6  # 3 chars * 2 events
+        # Each character calls page.keyboard.insert_text once
+        assert page.keyboard.insert_text.call_count == 3
 
     async def test_types_single_character(self):
-        tab = AsyncMock()
-        tab.send = AsyncMock()
+        page = AsyncMock()
 
         with patch("app.bot.human_imitation.asyncio.sleep", new_callable=AsyncMock):
-            await HumanImitation.type_like_human(tab, "x")
+            await HumanImitation.type_like_human(page, "x")
 
-        assert tab.send.call_count == 2  # keyDown + keyUp
+        assert page.keyboard.insert_text.call_count == 1
 
 
 class TestHumanDelay:
@@ -36,11 +34,11 @@ class TestHumanDelay:
 
 class TestNaturalScroll:
     async def test_calls_mouse_engine_scroll(self):
-        tab = AsyncMock()
+        page = AsyncMock()
 
         with patch("app.bot.human_imitation.asyncio.sleep", new_callable=AsyncMock):
             with patch("app.bot.human_imitation.mouse_engine.scroll", new_callable=AsyncMock) as mock_scroll:
                 with patch.object(HumanImitation, "human_delay", new_callable=AsyncMock):
-                    await HumanImitation.natural_scroll(tab, scrolls=3)
+                    await HumanImitation.natural_scroll(page, scrolls=3)
 
         assert mock_scroll.call_count == 3

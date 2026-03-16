@@ -27,13 +27,13 @@ class ExecutionContext:
         run_id: int,
         account: Optional[Account],
         browser_manager: Optional[BrowserManager],
-        tab,
+        page,
         fb_actions: Optional[FBActions],
     ):
         self.run_id = run_id
         self.account = account
         self.browser_manager = browser_manager
-        self.tab = tab
+        self.page = page
         self.fb_actions = fb_actions
         self.variables: dict = {}
         self.node_outputs: dict[str, dict] = {}  # node_id -> output_data
@@ -143,15 +143,15 @@ class WorkflowExecutor:
 
             # Start browser if we have an account
             browser_manager = None
-            tab = None
+            page = None
             fb_actions = None
 
-            if account and account.browser_profile_id:
-                browser_manager = BrowserManager(account.browser_profile_id)
+            if account:
+                browser_manager = BrowserManager(account.id)
                 try:
                     backup_cookies = account.session_cookies_backup or None
-                    tab = await browser_manager.start(backup_cookies=backup_cookies)
-                    fb_actions = FBActions(tab, account.fb_email)
+                    page = await browser_manager.start(backup_cookies=backup_cookies)
+                    fb_actions = FBActions(page, account.fb_email)
                 except Exception as e:
                     run.status = "FAILED"
                     run.error_message = f"Browser start failed: {e}"
@@ -163,7 +163,7 @@ class WorkflowExecutor:
                 run_id=run_id,
                 account=account,
                 browser_manager=browser_manager,
-                tab=tab,
+                page=page,
                 fb_actions=fb_actions,
             )
             ctx.variables = context_vars
@@ -176,9 +176,9 @@ class WorkflowExecutor:
                 run.error_message = str(e)[:1000]
             finally:
                 # Save session cookies if possible
-                if browser_manager and tab and account:
+                if browser_manager and page and account:
                     try:
-                        cookies = await browser_manager.extract_session_cookies(tab)
+                        cookies = await browser_manager.extract_session_cookies(page)
                         if cookies:
                             account.session_cookies_backup = cookies
                     except Exception:

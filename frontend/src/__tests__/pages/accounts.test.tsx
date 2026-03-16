@@ -95,7 +95,7 @@ describe("AccountsPage", () => {
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://localhost:8010/api/accounts/",
+        "/api/accounts/",
         expect.objectContaining({ method: "POST" })
       );
     });
@@ -120,7 +120,7 @@ describe("AccountsPage", () => {
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://localhost:8010/api/accounts/1",
+        "/api/accounts/1",
         expect.objectContaining({ method: "DELETE" })
       );
     });

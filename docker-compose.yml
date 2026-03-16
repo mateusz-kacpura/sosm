@@ -33,6 +33,7 @@ services:
     volumes:
       - ./backend:/app
     environment:
+      - STANDALONE=true
       - POSTGRES_HOST=localhost
       - REDIS_HOST=localhost
       - DONUT_API_URL=http://127.0.0.1:10108
@@ -45,36 +46,6 @@ services:
         condition: service_started
     command: uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload
 
-  # Worker runs on the HOST (not in Docker) because Donut Browser (desktop app)
-  # manages browser profiles natively with GPU access (authentic WebGL rendering).
-  # Start the worker manually on the host:
-  #   cd backend && source venv/bin/activate
-  #   celery -A app.worker.celery_app worker --loglevel=info --concurrency=10
-  #
-  # Required environment variables (in .env or exported):
-  #   POSTGRES_HOST=localhost
-  #   REDIS_HOST=localhost
-  #   DONUT_API_URL=http://127.0.0.1:10108
-  #   DONUT_API_TOKEN=<token-from-donut-browser-settings>
-
-  beat:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: sosm_beat
-    volumes:
-      - ./backend:/app
-    environment:
-      - POSTGRES_HOST=db
-      - REDIS_HOST=redis
-      - PYTHONUNBUFFERED=1
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    command: celery -A app.worker.celery_app beat --loglevel=info
-
   frontend:
     build:
       context: ./frontend
@@ -86,6 +57,8 @@ services:
       - ./frontend:/app
       - /app/node_modules
       - /app/.next
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8010/api
     depends_on:
       - api
     restart: always

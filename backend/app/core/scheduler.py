@@ -91,7 +91,7 @@ async def check_active_campaigns():
                 if settings.STANDALONE:
                     from app.task_runner import submit_publish_task
                     await submit_publish_task(
-                        profile_id=account.browser_profile_id,
+                        account_id=account.id,
                         account_email=account.fb_email,
                         account_pass=account.fb_password,
                         group_url=group.url,
@@ -104,7 +104,7 @@ async def check_active_campaigns():
                 else:
                     from app.worker import publish_post_task
                     publish_post_task.delay(
-                        profile_id=account.browser_profile_id,
+                        account_id=account.id,
                         account_email=account.fb_email,
                         account_pass=account.fb_password,
                         group_url=group.url,
@@ -223,6 +223,9 @@ async def check_scheduled_workflows():
                 if settings.STANDALONE:
                     from app.task_runner import submit_workflow_task
                     await submit_workflow_task(wf.id, run.id, {})
+                else:
+                    from app.worker import run_workflow_task
+                    run_workflow_task.delay(wf.id, run.id, {})
 
 
 def run_campaign_scheduler():
@@ -233,3 +236,13 @@ def run_campaign_scheduler():
         asyncio.set_event_loop(loop)
 
     loop.run_until_complete(check_active_campaigns())
+
+
+def run_workflow_scheduler():
+    """Synchroniczna funkcja wejścia dla Celery Beat — workflows."""
+    loop = asyncio.get_event_loop()
+    if loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    loop.run_until_complete(check_scheduled_workflows())

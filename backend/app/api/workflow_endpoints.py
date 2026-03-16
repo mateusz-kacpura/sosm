@@ -248,6 +248,9 @@ async def start_workflow_run(
     if settings.STANDALONE:
         from app import task_runner
         await task_runner.submit_workflow_task(workflow_id, run.id, variables)
+    else:
+        from app.worker import run_workflow_task
+        run_workflow_task.delay(workflow_id, run.id, variables)
 
     return run
 

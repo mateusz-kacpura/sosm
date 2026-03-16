@@ -8,9 +8,9 @@ from .interact_mixin import InteractMixin
 
 
 class FBActions(AuthMixin, ProfileMixin, PublishMixin, InteractMixin):
-    """Facebook actions (login, publish) using nodriver Tab + CDP mouse engine.
+    """Facebook actions (login, publish) using Playwright Page + Camoufox.
 
-    Requires an active nodriver Tab created by BrowserManager.
+    Requires an active Playwright Page created by BrowserManager.
 
     Methods are organized into mixins:
     - AuthMixin: login, account picker, login modal
@@ -19,11 +19,11 @@ class FBActions(AuthMixin, ProfileMixin, PublishMixin, InteractMixin):
     - InteractMixin: like, comment, message
     """
 
-    def __init__(self, tab, account_email: str):
-        self.tab = tab
+    def __init__(self, page, account_email: str):
+        self.page = page
         self.account_email = account_email
         self.screenshot_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
-        self.dom = DomWalker(tab)
+        self.dom = DomWalker(page)
         self._personal_profile_name: str | None = None
         self._current_page_name: str | None = None
         self._last_password: str | None = None

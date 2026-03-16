@@ -84,10 +84,13 @@ async def startup_event():
         os.makedirs(settings.DATA_DIR, exist_ok=True)
         os.makedirs(os.path.join(settings.DATA_DIR, "screenshots"), exist_ok=True)
 
-        # Initialize SQLite database
-        from app.core.database import init_db
-        await init_db()
-        logger.info("SQLite database initialized at %s", settings.DATA_DIR)
+        # Initialize database (SQLite needs table creation; PostgreSQL uses alembic)
+        if "sqlite" in settings.DATABASE_URL:
+            from app.core.database import init_db
+            await init_db()
+            logger.info("SQLite database initialized at %s", settings.DATA_DIR)
+        else:
+            logger.info("Using PostgreSQL at %s", settings.POSTGRES_HOST)
 
         # Check if password protection is active
         await security.init_password_check()

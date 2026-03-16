@@ -1,6 +1,6 @@
 """Async task runner — replaces Celery + Redis for standalone mode.
 
-Profile-level locks prevent concurrent browser sessions.
+Account-level locks prevent concurrent browser sessions.
 Semaphore controls overall concurrency. Retries with exponential backoff.
 """
 import asyncio
@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-_profile_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+_account_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 _concurrency_semaphore: asyncio.Semaphore | None = None
 _running_tasks: dict[str, asyncio.Task] = {}
 
@@ -24,14 +24,14 @@ def init(max_concurrency: int = 10):
 
 
 async def submit_publish_task(
-    profile_id: str, account_email: str, account_pass: str,
+    account_id: int, account_email: str, account_pass: str,
     group_url: str, post_content: str, group_id: int,
     campaign_name: str = "", backup_cookies: dict = None,
     background_style: str = None, max_retries: int = 3,
 ):
     task = asyncio.create_task(
         _run_publish_with_retry(
-            profile_id, account_email, account_pass,
+            account_id, account_email, account_pass,
             group_url, post_content, group_id,
             campaign_name, backup_cookies, background_style,
             max_retries,
@@ -43,21 +43,21 @@ async def submit_publish_task(
 
 
 async def _run_publish_with_retry(
-    profile_id, account_email, account_pass,
+    account_id, account_email, account_pass,
     group_url, post_content, group_id,
     campaign_name, backup_cookies, background_style,
     max_retries,
 ):
     from app.worker import run_bot_task
 
-    lock = _profile_locks[profile_id]
+    lock = _account_locks[account_id]
 
     for attempt in range(max_retries + 1):
         async with lock:
             async with _concurrency_semaphore:
                 try:
                     return await run_bot_task(
-                        profile_id, account_email, account_pass,
+                        account_id, account_email, account_pass,
                         group_url, post_content, group_id,
                         campaign_name, backup_cookies, background_style,
                     )
@@ -75,12 +75,12 @@ async def _run_publish_with_retry(
 
 
 async def submit_fingerprint_task(
-    test_id: int, profile_id: str = None, visit_external_sites: bool = False,
+    test_id: int, account_id: int = None, visit_external_sites: bool = False,
 ):
     from app.worker import run_fingerprint_collection
 
     task = asyncio.create_task(
-        run_fingerprint_collection(test_id, profile_id, visit_external_sites)
+        run_fingerprint_collection(test_id, account_id, visit_external_sites)
     )
     task_key = f"fingerprint:{test_id}"
     _running_tasks[task_key] = task

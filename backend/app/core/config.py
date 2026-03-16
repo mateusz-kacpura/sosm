@@ -21,12 +21,23 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "localhost"
     REDIS_PORT: str = "6379"
 
-    # Donut Browser Local API (enable in Settings, copy Bearer token)
+    # Donut Browser Local API (used by system management UI only)
     DONUT_API_URL: str = "http://127.0.0.1:10108"
     DONUT_API_TOKEN: str = ""
-    FINGERPRINT_PROFILE_ID: str = ""
+    FINGERPRINT_ACCOUNT_ID: int = 0  # account ID for fingerprint tests (0 = use request.account_id)
     BROWSER_CONCURRENCY: int = 10
     MEDIA_UPLOAD_DIR: str = ""
+
+    # Camoufox browser automation
+    CAMOUFOX_PROFILES_DIR: str = ""   # default: {DATA_DIR}/camoufox_profiles
+    CAMOUFOX_BINARY: str = ""         # optional path override
+    CAMOUFOX_HEADLESS: str = "virtual"  # "virtual" (Xvfb), "true", "false"
+
+    @property
+    def CAMOUFOX_DIR(self) -> str:
+        if self.CAMOUFOX_PROFILES_DIR:
+            return self.CAMOUFOX_PROFILES_DIR
+        return os.path.join(self.DATA_DIR, "camoufox_profiles")
 
     @property
     def MEDIA_DIR(self) -> str:
@@ -50,6 +61,9 @@ class Settings(BaseSettings):
     @property
     def DATABASE_URL(self) -> str:
         if self.STANDALONE:
+            # In standalone+Docker hybrid, use PostgreSQL if POSTGRES_HOST is configured
+            if os.environ.get("POSTGRES_HOST"):
+                return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
             db_path = os.path.join(self.DATA_DIR, "sosm.db")
             return f"sqlite+aiosqlite:///{db_path}"
         return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"

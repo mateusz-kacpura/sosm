@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Minimal system dependencies for API server.
-# Browser automation (worker) runs on the host via Donut Browser + nodriver.
+# Browser automation (worker) runs on the host via Camoufox.
 RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*

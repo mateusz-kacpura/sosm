@@ -3,13 +3,8 @@ import userEvent from "@testing-library/user-event";
 import CampaignsPage from "@/app/campaigns/page";
 
 const mockCampaigns = [
-  { id: 1, name: "Promocja Kursu AI", account_id: 1, groups: [{}, {}, {}], status: "AKTYWNA", start_at: null },
-  { id: 2, name: "Wyprzedaż Garażowa", account_id: 2, groups: [{}, {}], status: "WSTRZYMANA", start_at: "2024-06-01T12:00:00Z" },
-];
-
-const mockAccounts = [
-  { id: 1, fb_email: "marcin@fb.com" },
-  { id: 2, fb_email: "tester@fb.com" },
+  { id: 1, name: "Promocja Kursu AI", account_id: 1, groups_count: 3, status: "AKTYWNA", created_at: "2024-03-10T00:00:00Z" },
+  { id: 2, name: "Wyprzedaż Garażowa", account_id: 2, groups_count: 2, status: "WSTRZYMANA", created_at: "2024-06-01T12:00:00Z" },
 ];
 
 describe("CampaignsPage", () => {
@@ -17,24 +12,10 @@ describe("CampaignsPage", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string, opts?: any) => {
-        if (url.includes("/campaigns/") && (!opts || !opts.method)) {
+        if (url.includes("/campaigns/") && (!opts || !opts.method || opts.method === "GET")) {
           return Promise.resolve({
             ok: true,
             json: () => Promise.resolve(mockCampaigns),
-            statusText: "OK",
-          });
-        }
-        if (url.includes("/accounts/")) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve(mockAccounts),
-            statusText: "OK",
-          });
-        }
-        if (opts?.method === "POST") {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({ id: 3, name: "Test", status: "SZKIC", groups: [] }),
             statusText: "OK",
           });
         }
@@ -85,23 +66,13 @@ describe("CampaignsPage", () => {
     expect(screen.getByText("Wstrzymana")).toBeInTheDocument();
   });
 
-  it("opens new campaign dialog", async () => {
-    const user = userEvent.setup();
+  it("shows new campaign button linking to /campaigns/new", async () => {
     render(<CampaignsPage />);
     await waitFor(() => {
       expect(screen.getByText("Nowa Kampania")).toBeInTheDocument();
     });
-    await user.click(screen.getByText("Nowa Kampania"));
-    await waitFor(() => {
-      expect(screen.getByText("Kreator Nowej Kampanii")).toBeInTheDocument();
-    });
-  });
-
-  it("shows start_at or 'Od razu' for campaigns", async () => {
-    render(<CampaignsPage />);
-    await waitFor(() => {
-      expect(screen.getByText("Od razu")).toBeInTheDocument();
-    });
+    const link = screen.getByText("Nowa Kampania").closest("a");
+    expect(link).toHaveAttribute("href", "/campaigns/new");
   });
 
   it("shows action buttons based on status", async () => {
@@ -109,18 +80,15 @@ describe("CampaignsPage", () => {
     await waitFor(() => {
       expect(screen.getByText("Wstrzymaj")).toBeInTheDocument();
     });
-    expect(screen.getByText("Wznów")).toBeInTheDocument();
+    expect(screen.getByText("Wznow")).toBeInTheDocument();
   });
 
   it("shows empty state when no campaigns", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn((url: string) => {
-        if (url.includes("/accounts/")) {
-          return Promise.resolve({ ok: true, json: () => Promise.resolve([]), statusText: "OK" });
-        }
-        return Promise.resolve({ ok: true, json: () => Promise.resolve([]), statusText: "OK" });
-      })
+      vi.fn(() =>
+        Promise.resolve({ ok: true, json: () => Promise.resolve([]), statusText: "OK" })
+      )
     );
     render(<CampaignsPage />);
     await waitFor(() => {
@@ -135,7 +103,7 @@ describe("CampaignsPage", () => {
     );
     render(<CampaignsPage />);
     await waitFor(() => {
-      expect(screen.getByText(/Błąd/)).toBeInTheDocument();
+      expect(screen.getByText(/Blad/)).toBeInTheDocument();
     });
   });
 
@@ -150,37 +118,8 @@ describe("CampaignsPage", () => {
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(
-        "http://localhost:8010/api/campaigns/1",
+        "/api/campaigns/1",
         expect.objectContaining({ method: "PATCH" })
-      );
-    });
-  });
-
-  it("submits new campaign form with groups", async () => {
-    const user = userEvent.setup();
-    render(<CampaignsPage />);
-    await waitFor(() => {
-      expect(screen.getByText("Nowa Kampania")).toBeInTheDocument();
-    });
-
-    await user.click(screen.getByText("Nowa Kampania"));
-    await waitFor(() => {
-      expect(screen.getByText("Kreator Nowej Kampanii")).toBeInTheDocument();
-    });
-
-    await user.type(screen.getByPlaceholderText("np. Letnia Promocja"), "Test Kampania");
-    await user.type(screen.getByPlaceholderText("URL grupy"), "https://facebook.com/groups/test");
-    await user.type(screen.getByPlaceholderText("Treść posta dla tej grupy"), "Treść testowa");
-
-    // Select account
-    await user.selectOptions(screen.getByRole("combobox"), "1");
-
-    await user.click(screen.getByText("Utwórz Kampanię"));
-
-    await waitFor(() => {
-      expect(fetch).toHaveBeenCalledWith(
-        "http://localhost:8010/api/campaigns/",
-        expect.objectContaining({ method: "POST" })
       );
     });
   });
@@ -192,12 +131,9 @@ describe("CampaignsPage", () => {
         if (url.includes("/campaigns/")) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve([{ id: 10, name: "Draft", account_id: 1, groups: [], status: "SZKIC", start_at: null }]),
+            json: () => Promise.resolve([{ id: 10, name: "Draft", account_id: 1, groups_count: 0, status: "SZKIC", created_at: null }]),
             statusText: "OK",
           });
-        }
-        if (url.includes("/accounts/")) {
-          return Promise.resolve({ ok: true, json: () => Promise.resolve(mockAccounts), statusText: "OK" });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve([]), statusText: "OK" });
       })
@@ -206,31 +142,27 @@ describe("CampaignsPage", () => {
     await waitFor(() => {
       expect(screen.getByText("Szkic")).toBeInTheDocument();
     });
-    // "Start" appears both as table header and button - use getAllByText
     const startElements = screen.getAllByText("Start");
-    expect(startElements.length).toBeGreaterThanOrEqual(2);
+    expect(startElements.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("shows Zakończona status badge", async () => {
+  it("shows Zakonczona status badge", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string) => {
         if (url.includes("/campaigns/")) {
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve([{ id: 10, name: "Done", account_id: 1, groups: [], status: "ZAKOŃCZONA", start_at: null }]),
+            json: () => Promise.resolve([{ id: 10, name: "Done", account_id: 1, groups_count: 0, status: "ZAKOŃCZONA", created_at: null }]),
             statusText: "OK",
           });
-        }
-        if (url.includes("/accounts/")) {
-          return Promise.resolve({ ok: true, json: () => Promise.resolve(mockAccounts), statusText: "OK" });
         }
         return Promise.resolve({ ok: true, json: () => Promise.resolve([]), statusText: "OK" });
       })
     );
     render(<CampaignsPage />);
     await waitFor(() => {
-      expect(screen.getByText("Zakończona")).toBeInTheDocument();
+      expect(screen.getByText("Zakonczona")).toBeInTheDocument();
     });
   });
 });

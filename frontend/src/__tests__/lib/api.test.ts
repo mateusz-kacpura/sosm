@@ -23,7 +23,7 @@ describe("fetchApi", () => {
   it("calls fetch with correct URL", async () => {
     await fetchApi("/accounts/");
     expect(fetch).toHaveBeenCalledWith(
-      "http://localhost:8010/api/accounts/",
+      "/api/accounts/",
       expect.objectContaining({
         headers: expect.objectContaining({
           "Content-Type": "application/json",
@@ -53,7 +53,7 @@ describe("fetchApi", () => {
   it("passes custom options", async () => {
     await fetchApi("/test", { method: "POST", body: '{"a":1}' });
     expect(fetch).toHaveBeenCalledWith(
-      "http://localhost:8010/api/test",
+      "/api/test",
       expect.objectContaining({
         method: "POST",
         body: '{"a":1}',
@@ -83,7 +83,7 @@ describe("api object", () => {
   it("accounts.list calls correct endpoint", async () => {
     await api.accounts.list();
     expect(fetch).toHaveBeenCalledWith(
-      "http://localhost:8010/api/accounts/",
+      "/api/accounts/",
       expect.anything()
     );
   });
@@ -91,7 +91,7 @@ describe("api object", () => {
   it("accounts.create sends POST", async () => {
     await api.accounts.create({ fb_email: "a@b.com", fb_password: "pass" });
     expect(fetch).toHaveBeenCalledWith(
-      "http://localhost:8010/api/accounts/",
+      "/api/accounts/",
       expect.objectContaining({ method: "POST" })
     );
   });
@@ -99,7 +99,7 @@ describe("api object", () => {
   it("accounts.delete sends DELETE with id", async () => {
     await api.accounts.delete(3);
     expect(fetch).toHaveBeenCalledWith(
-      "http://localhost:8010/api/accounts/3",
+      "/api/accounts/3",
       expect.objectContaining({ method: "DELETE" })
     );
   });
@@ -107,7 +107,7 @@ describe("api object", () => {
   it("campaigns.update sends PATCH with id", async () => {
     await api.campaigns.update(5, { status: "AKTYWNA" });
     expect(fetch).toHaveBeenCalledWith(
-      "http://localhost:8010/api/campaigns/5",
+      "/api/campaigns/5",
       expect.objectContaining({ method: "PATCH" })
     );
   });
@@ -115,7 +115,7 @@ describe("api object", () => {
   it("campaigns.groups calls correct endpoint", async () => {
     await api.campaigns.groups(7);
     expect(fetch).toHaveBeenCalledWith(
-      "http://localhost:8010/api/campaigns/7/groups",
+      "/api/campaigns/7/groups",
       expect.anything()
     );
   });
@@ -123,7 +123,7 @@ describe("api object", () => {
   it("logs.list calls correct endpoint", async () => {
     await api.logs.list();
     expect(fetch).toHaveBeenCalledWith(
-      "http://localhost:8010/api/logs/",
+      "/api/logs/",
       expect.anything()
     );
   });
@@ -131,7 +131,7 @@ describe("api object", () => {
   it("stats calls correct endpoint", async () => {
     await api.stats();
     expect(fetch).toHaveBeenCalledWith(
-      "http://localhost:8010/api/stats/",
+      "/api/stats/",
       expect.anything()
     );
   });

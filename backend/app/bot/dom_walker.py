@@ -1,26 +1,20 @@
-"""Lightweight DOM query wrapper that delegates work to the browser's V8 engine.
+"""Lightweight DOM query wrapper that delegates work to the browser's JS engine.
 
-Instead of parsing raw CDP Node Arrays in Python (slow, error-prone on
-React-mutated DOMs), we inject small JS snippets via ``Runtime.evaluate``
+Instead of parsing raw DOM Node Arrays in Python (slow, error-prone on
+React-mutated DOMs), we inject small JS snippets via ``page.evaluate()``
 and get back ready-to-use coordinates ``{x, y, w, h}``.
 
 Usage::
 
-    walker = DomWalker(tab)
+    walker = DomWalker(page)
     el = await walker.find("input[name='email']")
     if el:
-        await mouse_engine.click_at(tab, el["x"] + el["w"]/2, el["y"] + el["h"]/2)
-
-NOTE: We use ``tab.send(cdp.runtime.evaluate(..., return_by_value=True))``
-instead of ``tab.evaluate()`` because nodriver's evaluate() forces
-``serialization_options="deep"`` which returns dicts as lists.
+        await mouse_engine.click_at(page, el["x"] + el["w"]/2, el["y"] + el["h"]/2)
 """
 
 import asyncio
 import json
 import logging
-
-import nodriver.cdp.runtime
 
 logger = logging.getLogger(__name__)
 
@@ -28,26 +22,16 @@ logger = logging.getLogger(__name__)
 ElementRect = dict  # {x, y, w, h, text}
 
 
-async def _eval_js(tab, js: str):
-    """Evaluate JS via CDP with return_by_value=True to get proper Python types.
-
-    nodriver's tab.evaluate() uses deep serialization which corrupts dicts
-    into lists. This bypasses that by using the CDP protocol directly.
-    """
-    result = await tab.send(nodriver.cdp.runtime.evaluate(
-        expression=js,
-        return_by_value=True,
-    ))
-    # result is a tuple (RemoteObject, ExceptionDetails | None)
-    remote_object = result[0] if isinstance(result, tuple) else result
-    return remote_object.value
+async def _eval_js(page, js: str):
+    """Evaluate JS via Playwright's page.evaluate() and return Python types."""
+    return await page.evaluate(js)
 
 
 class DomWalker:
-    """Thin wrapper around nodriver tab that queries DOM via JS injection."""
+    """Thin wrapper around Playwright page that queries DOM via JS injection."""
 
-    def __init__(self, tab):
-        self.tab = tab
+    def __init__(self, page):
+        self.page = page
 
     async def find(
         self, selector: str, timeout: float = 10.0
@@ -65,7 +49,7 @@ class DomWalker:
 
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
-            result = await _eval_js(self.tab, js)
+            result = await _eval_js(self.page, js)
             if result is not None:
                 return result
             if asyncio.get_event_loop().time() >= deadline:
@@ -92,7 +76,7 @@ class DomWalker:
 
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
-            result = await _eval_js(self.tab, js)
+            result = await _eval_js(self.page, js)
             if result is not None:
                 return result
             if asyncio.get_event_loop().time() >= deadline:
@@ -108,7 +92,7 @@ class DomWalker:
                 return {{x: r.x, y: r.y, w: r.width, h: r.height, text: (el.innerText || '').slice(0, 200)}};
             }});
         }})()"""
-        result = await _eval_js(self.tab, js)
+        result = await _eval_js(self.page, js)
         return result or []
 
     async def get_attribute(self, selector: str, attr: str) -> str | None:
@@ -117,7 +101,7 @@ class DomWalker:
             const el = document.querySelector({json.dumps(selector)});
             return el ? el.getAttribute({json.dumps(attr)}) : null;
         }})()"""
-        return await _eval_js(self.tab, js)
+        return await _eval_js(self.page, js)
 
     async def find_group_composer(self, timeout: float = 10.0) -> ElementRect | None:
         """Find Facebook group's 'Write something' composer trigger — language independent.
@@ -210,7 +194,7 @@ class DomWalker:
 
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
-            result = await _eval_js(self.tab, js)
+            result = await _eval_js(self.page, js)
             if result is not None:
                 return result
             if asyncio.get_event_loop().time() >= deadline:
@@ -291,7 +275,7 @@ class DomWalker:
 
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
-            result = await _eval_js(self.tab, js)
+            result = await _eval_js(self.page, js)
             if result is not None:
                 return result
             if asyncio.get_event_loop().time() >= deadline:
@@ -352,7 +336,7 @@ class DomWalker:
 
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
-            result = await _eval_js(self.tab, js)
+            result = await _eval_js(self.page, js)
             if result is not None:
                 return result
             if asyncio.get_event_loop().time() >= deadline:
@@ -464,7 +448,7 @@ class DomWalker:
 
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
-            result = await _eval_js(self.tab, js)
+            result = await _eval_js(self.page, js)
             if result is not None:
                 logger.info("Background button found via: %s", result.get("text", "?"))
                 return result
@@ -503,7 +487,7 @@ class DomWalker:
 
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
-            result = await _eval_js(self.tab, js)
+            result = await _eval_js(self.page, js)
             if result is not None:
                 return result
             if asyncio.get_event_loop().time() >= deadline:
@@ -544,7 +528,7 @@ class DomWalker:
 
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
-            result = await _eval_js(self.tab, js)
+            result = await _eval_js(self.page, js)
             if result is not None:
                 return result
             if asyncio.get_event_loop().time() >= deadline:
@@ -597,7 +581,7 @@ class DomWalker:
 
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
-            result = await _eval_js(self.tab, js)
+            result = await _eval_js(self.page, js)
             if result is not None:
                 return result
             if asyncio.get_event_loop().time() >= deadline:
@@ -658,7 +642,7 @@ class DomWalker:
 
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
-            result = await _eval_js(self.tab, js)
+            result = await _eval_js(self.page, js)
             if result is not None:
                 return result
             if asyncio.get_event_loop().time() >= deadline:
@@ -768,7 +752,7 @@ class DomWalker:
 
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
-            result = await _eval_js(self.tab, js)
+            result = await _eval_js(self.page, js)
             if result is not None:
                 logger.info("Media button found via: %s", result.get("text", "?"))
                 return result
@@ -878,7 +862,7 @@ class DomWalker:
 
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
-            result = await _eval_js(self.tab, js)
+            result = await _eval_js(self.page, js)
             if result is not None:
                 return result
             if asyncio.get_event_loop().time() >= deadline:

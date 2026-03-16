@@ -6,6 +6,12 @@ vi.mock("next/font/google", () => ({
   Inter: () => ({ className: "inter-mock" }),
 }));
 
+// Mock AuthProvider to pass-through children
+vi.mock("@/components/auth/auth-provider", () => ({
+  AuthProvider: ({ children }: any) => children,
+  useAuth: () => ({ logout: vi.fn(), authenticated: true, loading: false }),
+}));
+
 describe("RootLayout", () => {
   it("renders children content", () => {
     render(

@@ -102,7 +102,7 @@ class TestCheckActiveCampaigns:
 
         mock_publish_task.delay.assert_called_once()
         call_kwargs = mock_publish_task.delay.call_args[1]
-        assert call_kwargs["profile_id"] == "profile_abc"
+        assert call_kwargs["account_id"] == account.id
         assert call_kwargs["account_email"] == "dispatch@fb.com"
         assert call_kwargs["account_pass"] == "pass123"
         assert call_kwargs["group_url"] == "https://fb.com/groups/test"

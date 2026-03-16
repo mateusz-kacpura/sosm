@@ -24,7 +24,7 @@ describe("NodePalette", () => {
   it("renders facebook nodes", () => {
     render(<NodePalette />);
     expect(screen.getByText("Logowanie FB")).toBeInTheDocument();
-    expect(screen.getByText("Post na grupie")).toBeInTheDocument();
+    expect(screen.getByText("Posty na grupach")).toBeInTheDocument();
     expect(screen.getByText("Post na fanpage")).toBeInTheDocument();
     expect(screen.getByText("Polub stronę")).toBeInTheDocument();
     expect(screen.getByText("Komentarz")).toBeInTheDocument();

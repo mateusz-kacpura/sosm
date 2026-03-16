@@ -31,7 +31,7 @@ class FakeContext:
         self.fb_actions = fb_actions
         self.account = account
         self.browser_manager = None
-        self.tab = None
+        self.page = None
         self._cancelled = False
 
 
@@ -306,11 +306,11 @@ class TestVariableNode:
 
 
 class TestValidateConfig:
-    def test_post_group_requires_url_and_content(self):
+    def test_post_group_requires_groups_and_content(self):
         node = get_node("post_group")
         errors = node.validate_config({})
         assert len(errors) == 2
-        assert any("URL" in e for e in errors)
+        assert any("grupę" in e for e in errors)
         assert any("Treść" in e for e in errors)
 
     def test_post_group_valid(self):
@@ -383,34 +383,32 @@ class TestExecuteWithRetry:
         assert result == {"status": "started"}
 
     async def test_retry_on_failure(self):
-        node = get_node("post_group")
-        ctx = FakeContext()
+        node = get_node("login")
         mock_fb = AsyncMock()
-        mock_fb.publish_on_group = AsyncMock(
+        mock_account = MagicMock()
+        mock_account.fb_password = "pass"
+        mock_fb.login = AsyncMock(
             side_effect=[Exception("timeout"), Exception("timeout"), True]
         )
-        ctx.fb_actions = mock_fb
+        ctx = FakeContext(fb_actions=mock_fb, account=mock_account)
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
-            result = await node.execute_with_retry(
-                ctx, {"group_url": "url", "content": "text"}
-            )
+            result = await node.execute_with_retry(ctx, {})
         assert result["success"] is True
-        assert mock_fb.publish_on_group.call_count == 3
+        assert mock_fb.login.call_count == 3
 
     async def test_max_retries_exceeded(self):
-        node = get_node("post_group")
-        ctx = FakeContext()
+        node = get_node("login")
         mock_fb = AsyncMock()
-        mock_fb.publish_on_group = AsyncMock(side_effect=Exception("always fails"))
-        ctx.fb_actions = mock_fb
+        mock_account = MagicMock()
+        mock_account.fb_password = "pass"
+        mock_fb.login = AsyncMock(side_effect=Exception("always fails"))
+        ctx = FakeContext(fb_actions=mock_fb, account=mock_account)
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
             with pytest.raises(NodeExecutionError, match="failed"):
-                await node.execute_with_retry(
-                    ctx, {"group_url": "url", "content": "text"}
-                )
-        assert mock_fb.publish_on_group.call_count == 4  # 1 + 3 retries
+                await node.execute_with_retry(ctx, {})
+        assert mock_fb.login.call_count == 4  # 1 + 3 retries
 
 
 class TestLoginNode:

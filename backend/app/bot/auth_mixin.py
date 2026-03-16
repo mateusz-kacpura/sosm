@@ -15,7 +15,7 @@ class AuthMixin:
         """Log into Facebook, return True if successful."""
         self._last_password = password
         logger.info("Rozpoczynam logowanie dla: %s", self.account_email)
-        await self.tab.get("https://www.facebook.com/")
+        await self.page.goto("https://www.facebook.com/")
         await HumanImitation.human_delay(2, 5)
 
         # Check if already logged in via cookies.
@@ -39,7 +39,7 @@ class AuthMixin:
         # Accept cookie banner
         accept_btn = await self.dom.find("button[data-cookiebanner='accept_button']", timeout=3.0)
         if accept_btn:
-            await mouse_engine.click_element(self.tab, accept_btn)
+            await mouse_engine.click_element(self.page, accept_btn)
             await HumanImitation.human_delay()
             # Re-find email field after accepting cookies (DOM may have changed)
             login_form = await self.dom.find("input[name='email']", timeout=5.0)
@@ -47,21 +47,21 @@ class AuthMixin:
         # Enter email
         logger.info("Wprowadzanie poswiadczen...")
         if login_form:
-            await mouse_engine.click_element(self.tab, login_form)
-            await HumanImitation.type_like_human(self.tab, self.account_email)
+            await mouse_engine.click_element(self.page, login_form)
+            await HumanImitation.type_like_human(self.page, self.account_email)
             await HumanImitation.human_delay()
 
         # Enter password
         pass_field = await self.dom.find("input[name='pass']")
         if pass_field:
-            await mouse_engine.click_element(self.tab, pass_field)
-            await HumanImitation.type_like_human(self.tab, password)
+            await mouse_engine.click_element(self.page, pass_field)
+            await HumanImitation.type_like_human(self.page, password)
 
         # Click login button.
         login_btn = await self.dom.find_login_button(timeout=5.0)
         if login_btn:
             logger.info("Znaleziono przycisk logowania: %s", login_btn.get("text", ""))
-            await mouse_engine.click_element(self.tab, login_btn)
+            await mouse_engine.click_element(self.page, login_btn)
         else:
             # Debug: log what buttons exist on the page
             all_btns = await self.dom.find_all("button")
@@ -73,7 +73,7 @@ class AuthMixin:
         await HumanImitation.human_delay(4, 7)
 
         # Check for checkpoint/block
-        if await CheckpointDetector.handle_checkpoint_if_needed(self.tab, self.screenshot_dir, self.account_email):
+        if await CheckpointDetector.handle_checkpoint_if_needed(self.page, self.screenshot_dir, self.account_email):
             logger.error("Logowanie zablokowane - Checkpoint!")
             return False
 
@@ -82,7 +82,7 @@ class AuthMixin:
         if still_login:
             logger.error("Logowanie nie powiodlo sie - formularz nadal widoczny")
             os.makedirs(self.screenshot_dir, exist_ok=True)
-            await self.tab.save_screenshot(
+            await self.page.screenshot(path=
                 os.path.join(self.screenshot_dir, f"login_failed_{self.account_email}.png")
             )
             return False
@@ -106,7 +106,7 @@ class AuthMixin:
         # there are 2-3 buttons stacked vertically. The topmost one
         # is always "Continue" (blue CTA). FB applies color on inner
         # elements so we can't rely on backgroundColor of the button itself.
-        continue_btn = await _eval_js(self.tab, """(() => {
+        continue_btn = await _eval_js(self.page, """(() => {
             const btns = document.querySelectorAll(
                 "div[role='button'], a[role='button'], span[role='button'], button"
             );
@@ -126,14 +126,14 @@ class AuthMixin:
         if not continue_btn:
             logger.warning("Nie znaleziono przycisku Kontynuuj na account picker")
             os.makedirs(self.screenshot_dir, exist_ok=True)
-            await self.tab.save_screenshot(
+            await self.page.screenshot(path=
                 os.path.join(self.screenshot_dir,
                              f"account_picker_no_btn_{self.account_email}.png")
             )
             return False
 
         logger.info("Klikam przycisk kontynuacji: '%s'", continue_btn.get("text", ""))
-        await mouse_engine.click_element(self.tab, continue_btn)
+        await mouse_engine.click_element(self.page, continue_btn)
         await HumanImitation.human_delay(3, 5)
 
         # After clicking Continue, Facebook should show a password field
@@ -146,22 +146,22 @@ class AuthMixin:
                 return True
             logger.warning("Brak pola hasla po kliknieciu Kontynuuj")
             os.makedirs(self.screenshot_dir, exist_ok=True)
-            await self.tab.save_screenshot(
+            await self.page.screenshot(path=
                 os.path.join(self.screenshot_dir,
                              f"account_picker_no_pass_{self.account_email}.png")
             )
             return False
 
         logger.info("Wprowadzanie hasla po account picker...")
-        await mouse_engine.click_element(self.tab, pass_field)
-        await HumanImitation.type_like_human(self.tab, password)
+        await mouse_engine.click_element(self.page, pass_field)
+        await HumanImitation.type_like_human(self.page, password)
         await HumanImitation.human_delay(0.5, 1.0)
 
         # Find and click the login/submit button
         login_btn = await self.dom.find_login_button(timeout=5.0)
         if login_btn:
             logger.info("Klikam przycisk logowania: '%s'", login_btn.get("text", ""))
-            await mouse_engine.click_element(self.tab, login_btn)
+            await mouse_engine.click_element(self.page, login_btn)
         else:
             await self._submit_login_form()
 
@@ -169,7 +169,7 @@ class AuthMixin:
 
         # Check for checkpoint
         if await CheckpointDetector.handle_checkpoint_if_needed(
-            self.tab, self.screenshot_dir, self.account_email
+            self.page, self.screenshot_dir, self.account_email
         ):
             logger.error("Logowanie zablokowane - Checkpoint!")
             return False
@@ -182,7 +182,7 @@ class AuthMixin:
 
         logger.error("Logowanie przez account picker nie powiodlo sie")
         os.makedirs(self.screenshot_dir, exist_ok=True)
-        await self.tab.save_screenshot(
+        await self.page.screenshot(path=
             os.path.join(self.screenshot_dir,
                          f"login_failed_picker_{self.account_email}.png")
         )
@@ -203,7 +203,7 @@ class AuthMixin:
         email_field = await self.dom.find("input[name='email']", timeout=2.0)
         if not email_field:
             # Try other selectors for the email field in the modal
-            email_field = await _eval_js(self.tab, """(() => {
+            email_field = await _eval_js(self.page, """(() => {
                 const inputs = document.querySelectorAll("input[type='text'], input[type='email'], input[name='email']");
                 for (const inp of inputs) {
                     const r = inp.getBoundingClientRect();
@@ -219,14 +219,14 @@ class AuthMixin:
             return False
 
         # Fill in email
-        await mouse_engine.click_element(self.tab, email_field)
-        await HumanImitation.type_like_human(self.tab, self.account_email)
+        await mouse_engine.click_element(self.page, email_field)
+        await HumanImitation.type_like_human(self.page, self.account_email)
         await HumanImitation.human_delay(0.5, 1.0)
 
         # Fill in password
         pass_field = await self.dom.find("input[name='pass']", timeout=3.0)
         if not pass_field:
-            pass_field = await _eval_js(self.tab, """(() => {
+            pass_field = await _eval_js(self.page, """(() => {
                 const inputs = document.querySelectorAll("input[type='password']");
                 for (const inp of inputs) {
                     const r = inp.getBoundingClientRect();
@@ -241,8 +241,8 @@ class AuthMixin:
             logger.warning("Nie znaleziono pola hasla w modalu logowania")
             return False
 
-        await mouse_engine.click_element(self.tab, pass_field)
-        await HumanImitation.type_like_human(self.tab, password)
+        await mouse_engine.click_element(self.page, pass_field)
+        await HumanImitation.type_like_human(self.page, password)
         await HumanImitation.human_delay(0.5, 1.0)
 
         # Click login button
@@ -250,7 +250,7 @@ class AuthMixin:
         if login_btn:
             logger.info("Klikam przycisk logowania w modalu: '%s'",
                         login_btn.get("text", ""))
-            await mouse_engine.click_element(self.tab, login_btn)
+            await mouse_engine.click_element(self.page, login_btn)
         else:
             await self._submit_login_form()
 
@@ -258,7 +258,7 @@ class AuthMixin:
 
         # Verify login
         if await CheckpointDetector.handle_checkpoint_if_needed(
-            self.tab, self.screenshot_dir, self.account_email
+            self.page, self.screenshot_dir, self.account_email
         ):
             logger.error("Logowanie przez modal zablokowane - Checkpoint!")
             return False
@@ -274,7 +274,7 @@ class AuthMixin:
     async def _submit_login_form(self):
         """Submit login form via JS as last resort."""
         from .dom_walker import _eval_js
-        await _eval_js(self.tab, """(() => {
+        await _eval_js(self.page, """(() => {
             const form = document.querySelector('input[name="pass"]')?.closest('form');
             if (form) form.submit();
         })()""")

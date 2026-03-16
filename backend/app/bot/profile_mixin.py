@@ -2,8 +2,6 @@ import json as _json
 import logging
 import os
 
-import nodriver.cdp.input_
-
 from .human_imitation import HumanImitation
 from . import mouse_engine
 
@@ -17,7 +15,7 @@ class ProfileMixin:
         """Click the top-right profile avatar to open account menu."""
         from .dom_walker import _eval_js
 
-        avatar = await _eval_js(self.tab, """(() => {
+        avatar = await _eval_js(self.page, """(() => {
             const nav = document.querySelector("div[role='banner']")
                         || document.querySelector("div[role='navigation']");
             if (!nav) return null;
@@ -45,7 +43,7 @@ class ProfileMixin:
             logger.warning("Nie znaleziono avatara w prawym gornym rogu")
             return False
 
-        await mouse_engine.click_element(self.tab, avatar)
+        await mouse_engine.click_element(self.page, avatar)
         await HumanImitation.human_delay(1.5, 3)
         return True
 
@@ -62,13 +60,13 @@ class ProfileMixin:
 
         # Navigate to the fanpage to get its name
         logger.info("Nawigacja do fanpage: %s", fanpage_url)
-        await self.tab.get(fanpage_url)
+        await self.page.goto(fanpage_url)
         await HumanImitation.human_delay(3, 5)
 
         # Wait for the page to actually load (title changes from generic "Facebook")
         title = None
         for _ in range(10):
-            title = await _eval_js(self.tab, "document.title")
+            title = await _eval_js(self.page, "document.title")
             if title and title != "Facebook" and "|" in str(title):
                 break
             await HumanImitation.human_delay(1.5, 2.5)
@@ -77,7 +75,7 @@ class ProfileMixin:
         # Check if we hit a login modal (session expired).
         # Requires BOTH email and password fields visible + no nav banner
         # to avoid false positives from search bars on loaded pages.
-        login_modal = await _eval_js(self.tab, """(() => {
+        login_modal = await _eval_js(self.page, """(() => {
             if (document.querySelector("div[role='banner']")) return false;
             const emailField = document.querySelector(
                 "input[name='email'], input[type='email']"
@@ -97,7 +95,7 @@ class ProfileMixin:
             password = getattr(self, '_last_password', None)
             if password and await self._handle_login_modal(password):
                 # After login, navigate to the fanpage again
-                await self.tab.get(fanpage_url)
+                await self.page.goto(fanpage_url)
                 await HumanImitation.human_delay(3, 5)
             else:
                 logger.error("Nie udalo sie zalogowac przez modal")
@@ -106,7 +104,7 @@ class ProfileMixin:
         # Extract page name — og:title first, then title, then h1 as fallback.
         # h1 is unreliable because the sidebar header "Zarządzanie stroną"
         # is often the first h1 on the page management layout.
-        page_name = await _eval_js(self.tab, """(() => {
+        page_name = await _eval_js(self.page, """(() => {
             const og = document.querySelector('meta[property="og:title"]');
             if (og) {
                 const c = og.getAttribute('content');
@@ -141,7 +139,7 @@ class ProfileMixin:
         # "Switch to [Name]'s profile" (EN), etc.
         # Also capture personal profile name for later switch-back.
         page_name_json = _json.dumps(page_name)
-        search_result = await _eval_js(self.tab, f"""(() => {{
+        search_result = await _eval_js(self.page, f"""(() => {{
             const pageName = {page_name_json};
             let fanpageBtn = null;
             let personalName = null;
@@ -195,13 +193,13 @@ class ProfileMixin:
         if profile_btn:
             logger.info("Znaleziono profil fanpage w menu: '%s'",
                         profile_btn.get("text", ""))
-            await mouse_engine.click_element(self.tab, profile_btn)
+            await mouse_engine.click_element(self.page, profile_btn)
             await HumanImitation.human_delay(3, 5)
             logger.info("Przelaczono na profil fanpage: %s", page_name)
             return True
 
         # Fanpage not in the quick list — click "Zobacz wszystkie profile"
-        see_all = await _eval_js(self.tab, """(() => {
+        see_all = await _eval_js(self.page, """(() => {
             const byLabel = document.querySelector(
                 "div[role='button'][aria-label*='wszystkie profile'], "
                 + "div[role='button'][aria-label*='all profiles'], "
@@ -228,10 +226,10 @@ class ProfileMixin:
 
         if see_all:
             logger.info("Klikam: '%s'", see_all.get("text", ""))
-            await mouse_engine.click_element(self.tab, see_all)
+            await mouse_engine.click_element(self.page, see_all)
             await HumanImitation.human_delay(2, 4)
 
-            profile_btn = await _eval_js(self.tab, f"""(() => {{
+            profile_btn = await _eval_js(self.page, f"""(() => {{
                 const pageName = {page_name_json};
                 const btns = document.querySelectorAll(
                     "div[role='button'], div[role='menuitem'], div[role='listitem'], a[role='button']"
@@ -254,17 +252,14 @@ class ProfileMixin:
             if profile_btn:
                 logger.info("Znaleziono fanpage na liscie profili: '%s'",
                             profile_btn.get("text", ""))
-                await mouse_engine.click_element(self.tab, profile_btn)
+                await mouse_engine.click_element(self.page, profile_btn)
                 await HumanImitation.human_delay(3, 5)
                 logger.info("Przelaczono na profil fanpage: %s", page_name)
                 return True
 
         # Close any open menu
         logger.warning("Nie znaleziono profilu fanpage '%s' w menu", page_name)
-        await self.tab.send(nodriver.cdp.input_.dispatch_key_event(
-            type_="keyDown", key="Escape", code="Escape",
-            windows_virtual_key_code=27, native_virtual_key_code=27,
-        ))
+        await self.page.keyboard.press("Escape")
         return False
 
     async def switch_to_personal_profile(self) -> bool:
@@ -277,7 +272,7 @@ class ProfileMixin:
         from .dom_walker import _eval_js
 
         # Navigate to Facebook home for consistent UI
-        await self.tab.get("https://www.facebook.com/")
+        await self.page.goto("https://www.facebook.com/")
         await HumanImitation.human_delay(2, 4)
 
         if not await self._click_profile_avatar():
@@ -286,7 +281,7 @@ class ProfileMixin:
 
         # Build JS that prefers matching by remembered name, falls back to first entry
         personal_name_json = _json.dumps(self._personal_profile_name or "")
-        personal_btn = await _eval_js(self.tab, f"""(() => {{
+        personal_btn = await _eval_js(self.page, f"""(() => {{
             const targetName = {personal_name_json};
 
             // Strategy 1: find by remembered personal name in aria-label
@@ -344,13 +339,13 @@ class ProfileMixin:
             logger.info("Klikam profil osobisty: '%s' (via %s)",
                         personal_btn.get("text", ""),
                         personal_btn.get("strategy", "?"))
-            await mouse_engine.click_element(self.tab, personal_btn)
+            await mouse_engine.click_element(self.page, personal_btn)
             await HumanImitation.human_delay(3, 5)
             logger.info("Przywrocono profil osobisty")
             return True
 
         # Fallback: click "Zobacz wszystkie profile" and pick the first one
-        see_all = await _eval_js(self.tab, """(() => {
+        see_all = await _eval_js(self.page, """(() => {
             const btn = document.querySelector(
                 "div[role='button'][aria-label*='wszystkie profile'], "
                 + "div[role='button'][aria-label*='all profiles']"
@@ -364,11 +359,11 @@ class ProfileMixin:
 
         if see_all:
             logger.info("Klikam: '%s'", see_all.get("text", ""))
-            await mouse_engine.click_element(self.tab, see_all)
+            await mouse_engine.click_element(self.page, see_all)
             await HumanImitation.human_delay(2, 4)
 
             # Find personal profile by name, or first entry
-            first_profile = await _eval_js(self.tab, f"""(() => {{
+            first_profile = await _eval_js(self.page, f"""(() => {{
                 const targetName = {personal_name_json};
                 const btns = document.querySelectorAll(
                     "div[role='button'][aria-label*='Przełącz na profil'], "
@@ -400,7 +395,7 @@ class ProfileMixin:
 
             if first_profile:
                 logger.info("Klikam profil osobisty: '%s'", first_profile.get("text", ""))
-                await mouse_engine.click_element(self.tab, first_profile)
+                await mouse_engine.click_element(self.page, first_profile)
                 await HumanImitation.human_delay(3, 5)
                 logger.info("Przywrocono profil osobisty")
                 return True
