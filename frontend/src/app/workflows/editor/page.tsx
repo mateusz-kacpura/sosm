@@ -6,7 +6,7 @@ import { api } from "@/lib/api"
 import { WorkflowCanvas } from "@/components/workflow/workflow-canvas"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { ArrowLeft, Play, Loader2, Save } from "lucide-react"
+import { ArrowLeft, Play, Loader2, Save, Zap } from "lucide-react"
 import type { Node, Edge } from "@xyflow/react"
 import type { WorkflowNodeData } from "@/components/workflow/nodes/base-node"
 
@@ -22,6 +22,7 @@ function WorkflowEditorInner() {
   const [name, setName] = useState("")
   const [activeRunId, setActiveRunId] = useState<number | null>(null)
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, string>>({})
+  const [isTestRun, setIsTestRun] = useState(false)
 
   useEffect(() => {
     if (!workflowId) return
@@ -56,6 +57,7 @@ function WorkflowEditorInner() {
 
         if (run.status === "COMPLETED" || run.status === "FAILED" || run.status === "CANCELLED") {
           setActiveRunId(null)
+          setIsTestRun(false)
         }
       } catch (e) {
         console.error("Failed to poll run status:", e)
@@ -82,11 +84,13 @@ function WorkflowEditorInner() {
     [workflowId, name],
   )
 
-  const handleRun = async () => {
+  const handleRun = async (testMode: boolean = false) => {
     try {
-      const run = await api.workflows.run(workflowId)
+      const variables = testMode ? { test_mode: true } : undefined
+      const run = await api.workflows.run(workflowId, variables ? { variables } : undefined)
       setActiveRunId(run.id)
       setNodeStatuses({})
+      setIsTestRun(testMode)
     } catch (e) {
       console.error("Failed to start run:", e)
     }
@@ -145,11 +149,16 @@ function WorkflowEditorInner() {
 
         {activeRunId && (
           <span className="text-xs text-primary flex items-center gap-1 animate-pulse">
-            <Loader2 className="h-3 w-3 animate-spin" /> Wykonywanie...
+            <Loader2 className="h-3 w-3 animate-spin" />
+            {isTestRun ? "Test..." : "Wykonywanie..."}
           </span>
         )}
 
-        <Button size="sm" variant="outline" onClick={handleRun} disabled={!!activeRunId}>
+        <Button size="sm" variant="outline" onClick={() => handleRun(true)} disabled={!!activeRunId}>
+          <Zap className="h-3.5 w-3.5 mr-1.5" />
+          Test
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => handleRun(false)} disabled={!!activeRunId}>
           <Play className="h-3.5 w-3.5 mr-1.5" />
           Uruchom
         </Button>

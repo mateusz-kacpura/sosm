@@ -8,6 +8,7 @@ import { X, Calendar, FileText } from "lucide-react"
 import type { Node } from "@xyflow/react"
 import type { WorkflowNodeData } from "./nodes/base-node"
 import { GroupScheduleModal, type PostGroupsConfig } from "./group-schedule-modal"
+import { FB_BACKGROUNDS } from "@/app/campaigns/spreadsheet"
 
 interface NodeConfigPanelProps {
   node: Node<WorkflowNodeData> | null
@@ -111,10 +112,16 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
                   <span className="truncate">{config.default_content.slice(0, 60)}{config.default_content.length > 60 ? "..." : ""}</span>
                 </div>
               )}
-              {config.background_style && (
+              {config.publish_as_fanpage && (
+                <div className="flex items-center gap-2 text-[11px] text-primary">
+                  <span>👤</span>
+                  <span className="truncate">Jako fanpage</span>
+                </div>
+              )}
+              {(config.groups || []).some((g: any) => g.background_style) && (
                 <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                  <span>Tlo:</span>
-                  <span className="font-mono">{config.background_style}</span>
+                  <span>🎨</span>
+                  <span>{(config.groups || []).filter((g: any) => g.background_style).length} z tłem</span>
                 </div>
               )}
             </div>
@@ -126,7 +133,7 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
               onClick={() => setShowScheduleModal(true)}
             >
               <Calendar className="h-3.5 w-3.5 mr-1.5" />
-              Otworz harmonogram
+              Otwórz harmonogram
             </Button>
 
             {showScheduleModal && (
@@ -138,6 +145,7 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
                   active_hours_start: config.active_hours_start || "08:00",
                   active_hours_end: config.active_hours_end || "20:00",
                   spread_minutes: config.spread_minutes || 15,
+                  publish_as_fanpage: config.publish_as_fanpage || "",
                 }}
                 onSave={(newConfig: PostGroupsConfig) => {
                   const merged = {
@@ -148,6 +156,7 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
                     active_hours_start: newConfig.active_hours_start,
                     active_hours_end: newConfig.active_hours_end,
                     spread_minutes: newConfig.spread_minutes,
+                    publish_as_fanpage: newConfig.publish_as_fanpage,
                   }
                   setConfig(merged)
                   if (node) onUpdate(node.id, { config: merged })
@@ -177,6 +186,36 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
                 onChange={(e) => updateField("content", e.target.value)}
                 className="w-full rounded-md border border-input bg-secondary/50 px-2 py-1.5 text-xs min-h-[60px] resize-y"
               />
+              {config.background_style && (
+                <p className="text-[10px] text-muted-foreground">Maks. 100 znaków z tłem</p>
+              )}
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Tło posta</Label>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  onClick={() => updateField("background_style", "")}
+                  className={`h-7 w-7 rounded-md border text-[10px] ${
+                    !config.background_style ? "border-primary ring-2 ring-primary/30" : "border-primary/10"
+                  } bg-secondary/50`}
+                  title="Brak tła"
+                >
+                  ∅
+                </button>
+                {FB_BACKGROUNDS.map((bg) => (
+                  <button
+                    key={bg.id}
+                    onClick={() => updateField("background_style", bg.id)}
+                    className={`h-7 w-7 rounded-md border ${
+                      config.background_style === bg.id
+                        ? "border-primary ring-2 ring-primary/30 scale-110"
+                        : "border-primary/10"
+                    }`}
+                    style={{ backgroundColor: bg.color }}
+                    title={bg.label}
+                  />
+                ))}
+              </div>
             </div>
           </>
         )}

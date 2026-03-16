@@ -248,7 +248,7 @@ class DomWalker:
             // Strategy 0: find button by aria-label matching publish/submit keywords
             // This is the most reliable — FB "Opublikuj" button has transparent bg
             // but always has aria-label="Opublikuj" (PL) / "Post" (EN) / "Submit" (EN)
-            const publishKeywords = ['opublikuj', 'publish', 'post', 'submit', 'prześlij'];
+            const publishKeywords = ['opublikuj', 'publish', 'post', 'submit', 'prześlij', 'เผยแพร่', 'โพสต์'];
             for (const btn of buttons) {
                 const label = (btn.getAttribute('aria-label') || '').toLowerCase();
                 if (!label) continue;
@@ -680,25 +680,68 @@ class DomWalker:
             btn = document.querySelector("[data-testid='royal_login_button']");
             if (btn) { const r = btn.getBoundingClientRect(); return {x:r.x, y:r.y, w:r.width, h:r.height, text:btn.innerText}; }
 
-            // Strategy 3: any <button> on the page (regardless of attributes)
+            // Strategy 3: button inside same container as password field (modals, account picker)
+            const passInput = document.querySelector("input[name='pass']");
+            if (passInput) {
+                // Walk up to find the modal/form container, then search inside it
+                let container = passInput.parentElement;
+                for (let i = 0; i < 10 && container; i++) {
+                    const role = container.getAttribute && container.getAttribute('role');
+                    const tag = container.tagName && container.tagName.toLowerCase();
+                    if (role === 'dialog' || role === 'form' || tag === 'form'
+                        || (container.querySelector && container.querySelector("input[name='pass']")
+                            && container.querySelectorAll("button, div[role='button']").length > 0)) {
+                        break;
+                    }
+                    container = container.parentElement;
+                }
+                if (container) {
+                    const passRect = passInput.getBoundingClientRect();
+                    const candidates = container.querySelectorAll("button, div[role='button'], a[role='button'], span[role='button'], [type='submit']");
+                    let closest = null;
+                    let closestDist = Infinity;
+                    for (const c of candidates) {
+                        const cr = c.getBoundingClientRect();
+                        if (cr.y >= passRect.bottom && cr.width > 80 && cr.height > 20) {
+                            const dist = cr.y - passRect.bottom;
+                            if (dist < closestDist) {
+                                closestDist = dist;
+                                closest = c;
+                            }
+                        }
+                    }
+                    if (closest) {
+                        const cr = closest.getBoundingClientRect();
+                        return {x:cr.x, y:cr.y, w:cr.width, h:cr.height, text:(closest.innerText||'').slice(0,100)};
+                    }
+                }
+                // Fallback: search globally but only below password bottom
+                const passRect2 = passInput.getBoundingClientRect();
+                const allCandidates = document.querySelectorAll("button, div[role='button'], a[role='button'], span[role='button'], [type='submit']");
+                let closest2 = null;
+                let closestDist2 = Infinity;
+                for (const c of allCandidates) {
+                    const cr = c.getBoundingClientRect();
+                    if (cr.y >= passRect2.bottom && cr.width > 100 && cr.height > 20) {
+                        const dist = cr.y - passRect2.bottom;
+                        if (dist < closestDist2) {
+                            closestDist2 = dist;
+                            closest2 = c;
+                        }
+                    }
+                }
+                if (closest2) {
+                    const cr = closest2.getBoundingClientRect();
+                    return {x:cr.x, y:cr.y, w:cr.width, h:cr.height, text:(closest2.innerText||'').slice(0,100)};
+                }
+            }
+
+            // Strategy 4: any <button> on the page (regardless of attributes)
             const buttons = document.querySelectorAll('button');
             for (const b of buttons) {
                 const r = b.getBoundingClientRect();
                 if (r.width > 50 && r.height > 20) {
                     return {x:r.x, y:r.y, w:r.width, h:r.height, text:(b.innerText||'').slice(0,100)};
-                }
-            }
-
-            // Strategy 4: div[role='button'] or clickable elements near password field
-            const passInput = document.querySelector("input[name='pass']");
-            if (passInput) {
-                const passRect = passInput.getBoundingClientRect();
-                const candidates = document.querySelectorAll("div[role='button'], a[role='button'], span[role='button'], [type='submit']");
-                for (const c of candidates) {
-                    const cr = c.getBoundingClientRect();
-                    if (cr.y > passRect.y && cr.width > 100 && cr.height > 20) {
-                        return {x:cr.x, y:cr.y, w:cr.width, h:cr.height, text:(c.innerText||'').slice(0,100)};
-                    }
                 }
             }
 

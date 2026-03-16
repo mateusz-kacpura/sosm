@@ -198,6 +198,9 @@ export const PostGroupNode = memo(({ data, selected }: NodeProps) => {
       {displayContent && (
         <div className="truncate mt-0.5 italic">{displayContent.slice(0, 40)}{displayContent.length > 40 ? "..." : ""}</div>
       )}
+      {d.config?.publish_as_fanpage && (
+        <div className="truncate text-primary">jako fanpage</div>
+      )}
     </BaseNodeInner>
   )
 })

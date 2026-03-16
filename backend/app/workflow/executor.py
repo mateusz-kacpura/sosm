@@ -72,7 +72,7 @@ class WorkflowExecutor:
                 logger.error("WorkflowRun %d not found", run_id)
                 return
 
-            # Load account — from workflow.account_id or from Login node config
+            # Load account — from workflow.account_id, Login node config, or sole account
             account = None
             account_id = wf.account_id
             if not account_id:
@@ -80,6 +80,12 @@ class WorkflowExecutor:
                 account_id = self._find_login_account_id(wf.graph_data)
                 if account_id:
                     logger.info("Auto-detected account_id=%d from Login node config", account_id)
+            if not account_id:
+                # Fallback: use the only account if exactly one exists
+                all_accounts = (await db.execute(select(Account))).scalars().all()
+                if len(all_accounts) == 1:
+                    account_id = all_accounts[0].id
+                    logger.info("Auto-selected sole account id=%d", account_id)
             if account_id:
                 account = await db.get(Account, account_id)
 

@@ -7,11 +7,11 @@ import {
   X, Maximize2, Minimize2, ClipboardPaste, Wand2, Trash2, Plus, RefreshCw,
 } from "lucide-react"
 import {
-  FB_BACKGROUNDS, BG_CONTENT_LIMIT, getBgColor,
+  FB_BACKGROUNDS, getBgColor,
   SPREAD_STEPS, formatSpread,
 } from "@/app/campaigns/spreadsheet"
 
-const DAY_LABELS = ["Pn", "Wt", "Sr", "Cz", "Pt", "Sb", "Nd"] as const
+const DAY_LABELS = ["Pn", "Wt", "Śr", "Cz", "Pt", "Sb", "Nd"] as const
 // 0=Monday ... 6=Sunday (ISO week)
 
 export interface GroupEntry {
@@ -23,15 +23,17 @@ export interface GroupEntry {
   recurring_days: number[]  // 0=Mon ... 6=Sun
   recurring_time: string    // "HH:MM"
   recurring_jitter: number  // 0-120 minutes of random deviation
+  background_style: string  // per-group bg override (empty = use global)
 }
 
 export interface PostGroupsConfig {
   groups: GroupEntry[]
   default_content: string
-  background_style: string
+  background_style: string  // kept for backward compat, not used in new UI
   active_hours_start: string
   active_hours_end: string
   spread_minutes: number
+  publish_as_fanpage: string  // fanpage URL or "" (personal profile)
 }
 
 interface GroupScheduleModalProps {
@@ -56,11 +58,11 @@ function pad(n: number) {
 }
 
 function makeEmptyGroup(): GroupEntry {
-  return { url: "", content: "", planned_date: "", planned_time: "", recurring: false, recurring_days: [], recurring_time: "10:00", recurring_jitter: 15 }
+  return { url: "", content: "", planned_date: "", planned_time: "", recurring: false, recurring_days: [], recurring_time: "10:00", recurring_jitter: 15, background_style: "" }
 }
 
 function formatJitter(minutes: number): string {
-  if (minutes === 0) return "dokladnie"
+  if (minutes === 0) return "dokładnie"
   if (minutes < 60) return `\u00B1${minutes} min`
   const h = minutes / 60
   return `\u00B1${h % 1 === 0 ? h : h.toFixed(1)}h`
@@ -120,6 +122,7 @@ function generateSchedule(
       recurring_days: [],
       recurring_time: "10:00",
       recurring_jitter: 15,
+      background_style: "",
     }
   })
 }
@@ -144,47 +147,46 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
       recurring_days: g.recurring_days || [],
       recurring_time: g.recurring_time || "10:00",
       recurring_jitter: g.recurring_jitter ?? 15,
+      background_style: g.background_style || "",
     }))
   )
   const [defaultContent, setDefaultContent] = useState(config.default_content || "")
-  const [bgStyle, setBgStyle] = useState(config.background_style || "")
   const [activeHoursStart, setActiveHoursStart] = useState(config.active_hours_start || "08:00")
   const [activeHoursEnd, setActiveHoursEnd] = useState(config.active_hours_end || "20:00")
   const [spreadIdx, setSpreadIdx] = useState(() => {
     const idx = SPREAD_STEPS.indexOf(config.spread_minutes)
     return idx >= 0 ? idx : 3
   })
+  const [publishAsFanpage, setPublishAsFanpage] = useState(config.publish_as_fanpage || "")
   const [rawText, setRawText] = useState("")
   const [showBgPicker, setShowBgPicker] = useState(false)
-  const bgBtnRef = useRef<HTMLButtonElement>(null)
+  const [bgPickerTarget, setBgPickerTarget] = useState<number>(0)
   const bgPopoverRef = useRef<HTMLDivElement>(null)
   const [bgPos, setBgPos] = useState({ top: 0, left: 0 })
 
   const spreadMin = SPREAD_STEPS[spreadIdx]
   const parsedCount = parseGroupUrls(rawText).length
-  const charLimit = bgStyle ? BG_CONTENT_LIMIT : Infinity
 
-  const openBgPicker = useCallback(() => {
-    if (bgBtnRef.current) {
-      const rect = bgBtnRef.current.getBoundingClientRect()
-      const popW = 280
-      let left = rect.left
-      if (left + popW > window.innerWidth - 8) left = window.innerWidth - popW - 8
-      if (left < 8) left = 8
-      const spaceBelow = window.innerHeight - rect.bottom
-      const top = spaceBelow > 320 ? rect.bottom + 4 : rect.top - 320
-      setBgPos({ top, left })
-    }
+  const openBgPicker = useCallback((rowIdx: number, anchorEl: HTMLElement) => {
+    const rect = anchorEl.getBoundingClientRect()
+    const popW = 280
+    let left = rect.left
+    if (left + popW > window.innerWidth - 8) left = window.innerWidth - popW - 8
+    if (left < 8) left = 8
+    const spaceBelow = window.innerHeight - rect.bottom
+    const top = spaceBelow > 320 ? rect.bottom + 4 : rect.top - 320
+    setBgPos({ top, left })
+    setBgPickerTarget(rowIdx)
     setShowBgPicker(true)
   }, [])
 
   useEffect(() => {
     if (!showBgPicker) return
     const onMouseDown = (e: MouseEvent) => {
-      if (
-        bgPopoverRef.current && !bgPopoverRef.current.contains(e.target as Node) &&
-        bgBtnRef.current && !bgBtnRef.current.contains(e.target as Node)
-      ) setShowBgPicker(false)
+      const target = e.target as HTMLElement
+      if (bgPopoverRef.current?.contains(target)) return
+      if (target.closest("[data-bg-row-btn]")) return
+      setShowBgPicker(false)
     }
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShowBgPicker(false) }
     document.addEventListener("mousedown", onMouseDown)
@@ -227,13 +229,14 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
     onSave({
       groups,
       default_content: defaultContent,
-      background_style: bgStyle,
+      background_style: "",
       active_hours_start: activeHoursStart,
       active_hours_end: activeHoursEnd,
       spread_minutes: spreadMin,
+      publish_as_fanpage: publishAsFanpage,
     })
     onClose()
-  }, [groups, defaultContent, bgStyle, activeHoursStart, activeHoursEnd, spreadMin, onSave, onClose])
+  }, [groups, defaultContent, activeHoursStart, activeHoursEnd, spreadMin, publishAsFanpage, onSave, onClose])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -277,10 +280,33 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
-          {/* Default Content + Background */}
+          {/* Publish as fanpage */}
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-xs cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!!publishAsFanpage}
+                onChange={(e) => setPublishAsFanpage(e.target.checked ? publishAsFanpage || "https://www.facebook.com/" : "")}
+                className="rounded"
+              />
+              Publikuj jako fanpage
+            </label>
+            {!!publishAsFanpage && (
+              <input
+                value={publishAsFanpage}
+                onChange={(e) => setPublishAsFanpage(e.target.value)}
+                className="w-full h-8 rounded-md border border-primary/10 bg-secondary/50 px-3 text-xs font-mono
+                           focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary
+                           placeholder:text-muted-foreground/50"
+                placeholder="https://www.facebook.com/nazwa-fanpage"
+              />
+            )}
+          </div>
+
+          {/* Default Content */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <Label className="text-xs">Domyslna tresc posta</Label>
+              <Label className="text-xs">Domyślna treść posta</Label>
               {groups.length > 0 && (
                 <button
                   onClick={applyDefaultToEmpty}
@@ -290,49 +316,21 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
                 </button>
               )}
             </div>
-            <div className="relative">
-              <textarea
-                value={defaultContent}
-                onChange={(e) => {
-                  if (e.target.value.length <= charLimit) setDefaultContent(e.target.value)
-                }}
-                className="w-full min-h-[70px] rounded-md border border-primary/10 bg-secondary/50 px-3 py-2 text-xs resize-y
-                           focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary
-                           placeholder:text-muted-foreground/50"
-                placeholder="Domyslna tresc — kazda grupa moze miec wlasna tresc ponizej..."
-              />
-              {bgStyle && (
-                <span className="absolute bottom-2 right-2 text-[10px] text-muted-foreground">
-                  {defaultContent.length}/{BG_CONTENT_LIMIT}
-                </span>
-              )}
-            </div>
-
-            <div className="flex items-center gap-3">
-              <Label className="text-xs">Tlo:</Label>
-              <button
-                ref={bgBtnRef}
-                onClick={openBgPicker}
-                className="h-7 w-7 rounded-md border border-primary/10 cursor-pointer transition-colors hover:border-primary/30"
-                style={{ backgroundColor: bgStyle ? getBgColor(bgStyle) || "#333" : "transparent" }}
-                title={bgStyle || "Brak tla"}
-              />
-              {bgStyle && (
-                <button
-                  onClick={() => setBgStyle("")}
-                  className="text-[10px] text-muted-foreground hover:text-foreground"
-                >
-                  Usun tlo
-                </button>
-              )}
-            </div>
+            <textarea
+              value={defaultContent}
+              onChange={(e) => setDefaultContent(e.target.value)}
+              className="w-full min-h-[70px] rounded-md border border-primary/10 bg-secondary/50 px-3 py-2 text-xs resize-y
+                         focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary
+                         placeholder:text-muted-foreground/50"
+              placeholder="Domyślna treść — każda grupa może mieć własną treść poniżej..."
+            />
           </div>
 
           {/* URL paste + schedule generator */}
           <div className="border border-primary/10 rounded-lg bg-card/50 p-4 space-y-3">
             <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
               <ClipboardPaste className="h-4 w-4 text-primary" />
-              Wklej liste grup
+              Wklej listę grup
             </div>
 
             <textarea
@@ -347,7 +345,7 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
             {parsedCount > 0 && (
               <p className="text-[11px] text-muted-foreground">
                 Rozpoznano <span className="text-primary font-semibold">{parsedCount}</span>{" "}
-                {parsedCount === 1 ? "grupe" : parsedCount < 5 ? "grupy" : "grup"}
+                {parsedCount === 1 ? "grupę" : parsedCount < 5 ? "grupy" : "grup"}
               </p>
             )}
 
@@ -414,17 +412,18 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
                   onClick={() => setGroups([])}
                   className="text-[10px] text-rose-400 hover:text-rose-300 transition-colors"
                 >
-                  Wyczysc wszystko
+                  Wyczyść wszystko
                 </button>
               </div>
 
               <div className="border border-primary/10 rounded-lg overflow-hidden">
                 {/* Table header */}
-                <div className="grid grid-cols-[minmax(200px,1fr)_minmax(160px,1fr)_100px_70px_36px_36px] gap-px bg-primary/5 text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
+                <div className="grid grid-cols-[minmax(200px,1fr)_minmax(160px,1fr)_100px_70px_32px_36px_36px] gap-px bg-primary/5 text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
                   <div className="px-3 py-1.5 bg-card">URL grupy</div>
-                  <div className="px-2 py-1.5 bg-card">Tresc posta</div>
+                  <div className="px-2 py-1.5 bg-card">Treść posta</div>
                   <div className="px-2 py-1.5 bg-card">Data</div>
                   <div className="px-2 py-1.5 bg-card">Godz.</div>
+                  <div className="px-1 py-1.5 bg-card text-center" title="Kolor tła">🎨</div>
                   <div className="px-1 py-1.5 bg-card text-center" title="Publikacja cykliczna">
                     <RefreshCw className="h-3 w-3 mx-auto" />
                   </div>
@@ -436,7 +435,7 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
                   {groups.map((g, i) => (
                     <Fragment key={i}>
                       {/* Main row */}
-                      <div className="grid grid-cols-[minmax(200px,1fr)_minmax(160px,1fr)_100px_70px_36px_36px] gap-px bg-primary/5 text-xs border-t border-primary/5 first:border-t-0">
+                      <div className="grid grid-cols-[minmax(200px,1fr)_minmax(160px,1fr)_100px_70px_32px_36px_36px] gap-px bg-primary/5 text-xs border-t border-primary/5 first:border-t-0">
                         <div className="px-2 py-1.5 bg-card">
                           <input
                             value={g.url}
@@ -450,8 +449,8 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
                             value={g.content}
                             onChange={(e) => updateGroup(i, { content: e.target.value })}
                             className="w-full bg-transparent text-xs focus:outline-none truncate"
-                            placeholder="Tresc (lub domyslna)"
-                            title={g.content || "Uzyje domyslnej tresci"}
+                            placeholder="Treść (lub domyślna)"
+                            title={g.content || "Użyje domyślnej treści"}
                           />
                         </div>
                         <div className="px-1 py-1.5 bg-card">
@@ -472,13 +471,28 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
                         </div>
                         <div className="flex items-center justify-center bg-card">
                           <button
+                            data-bg-row-btn
+                            onClick={(e) => openBgPicker(i, e.currentTarget)}
+                            className={`h-5 w-5 rounded border cursor-pointer transition-all hover:scale-110 ${
+                              g.background_style ? "border-primary/30" : "border-primary/10 hover:border-primary/30"
+                            }`}
+                            style={{
+                              backgroundColor: g.background_style
+                                ? getBgColor(g.background_style) || "#333"
+                                : "transparent",
+                            }}
+                            title={g.background_style || "Brak tła"}
+                          />
+                        </div>
+                        <div className="flex items-center justify-center bg-card">
+                          <button
                             onClick={() => updateGroup(i, { recurring: !g.recurring, recurring_days: !g.recurring ? [0,1,2,3,4] : g.recurring_days })}
                             className={`p-1 rounded transition-colors ${
                               g.recurring
                                 ? "text-primary bg-primary/10"
                                 : "text-muted-foreground/40 hover:text-muted-foreground"
                             }`}
-                            title={g.recurring ? "Cykliczna: wlaczona" : "Cykliczna: wylaczona"}
+                            title={g.recurring ? "Cykliczna: włączona" : "Cykliczna: wyłączona"}
                           >
                             <RefreshCw className="h-3 w-3" />
                           </button>
@@ -561,6 +575,7 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
           <span className="text-xs text-muted-foreground">
             {groups.length} {groups.length === 1 ? "grupa" : groups.length < 5 ? "grupy" : "grup"}
             {recurringCount > 0 ? ` · ${recurringCount} cyklicznych` : ""}
+            {publishAsFanpage ? " · jako fanpage" : ""}
             {defaultContent ? ` · ${defaultContent.length} zn.` : ""}
           </span>
           <div className="flex items-center gap-2">
@@ -574,7 +589,7 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
         </div>
       </div>
 
-      {/* Background picker popover */}
+      {/* Background picker popover (per-row only) */}
       {showBgPicker && (
         <div
           ref={bgPopoverRef}
@@ -583,27 +598,36 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
         >
           <div className="flex items-center justify-between mb-2">
             <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
-              Tlo posta
+              Tło grupy
             </span>
             <button
-              onClick={() => { setBgStyle(""); setShowBgPicker(false) }}
+              onClick={() => {
+                updateGroup(bgPickerTarget, { background_style: "" })
+                setShowBgPicker(false)
+              }}
               className="text-[10px] text-muted-foreground hover:text-foreground"
             >
               Brak
             </button>
           </div>
           <div className="grid grid-cols-7 gap-1.5">
-            {FB_BACKGROUNDS.map((bg) => (
-              <button
-                key={bg.id}
-                onClick={() => { setBgStyle(bg.id); setShowBgPicker(false) }}
-                className={`h-7 w-7 rounded-md border transition-all cursor-pointer hover:scale-110 ${
-                  bgStyle === bg.id ? "border-primary ring-2 ring-primary/30 scale-110" : "border-primary/10"
-                }`}
-                style={{ backgroundColor: bg.color }}
-                title={bg.label}
-              />
-            ))}
+            {FB_BACKGROUNDS.map((bg) => {
+              const activeBg = groups[bgPickerTarget]?.background_style || ""
+              return (
+                <button
+                  key={bg.id}
+                  onClick={() => {
+                    updateGroup(bgPickerTarget, { background_style: bg.id })
+                    setShowBgPicker(false)
+                  }}
+                  className={`h-7 w-7 rounded-md border transition-all cursor-pointer hover:scale-110 ${
+                    activeBg === bg.id ? "border-primary ring-2 ring-primary/30 scale-110" : "border-primary/10"
+                  }`}
+                  style={{ backgroundColor: bg.color }}
+                  title={bg.label}
+                />
+              )
+            })}
           </div>
         </div>
       )}

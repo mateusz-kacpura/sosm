@@ -106,9 +106,10 @@ class PostGroupNode(BaseNode):
     category = "facebook"
 
     async def execute(self, context: "ExecutionContext", config: dict) -> dict:
+        test_mode = context.variables.get("test_mode", False)
         groups = config.get("groups", [])
         default_content = _resolve_var(config.get("default_content", "") or config.get("content", ""), context.variables)
-        bg_style = config.get("background_style") or None
+        publish_as_fanpage = config.get("publish_as_fanpage") or None
 
         if not context.fb_actions:
             raise NodeExecutionError("No browser session")
@@ -120,88 +121,131 @@ class PostGroupNode(BaseNode):
         if not groups:
             raise NodeExecutionError("No groups configured")
 
-        # Filter groups by recurring schedule — skip if today is not a scheduled day
-        active_groups = _filter_scheduled_groups(groups)
+        # Identity switching: switch to fanpage ONCE before the loop, or verify personal
+        switched_to_fanpage = False
+        if publish_as_fanpage:
+            fanpage_url = _resolve_var(publish_as_fanpage, context.variables)
+            logger.info("Przelaczanie na profil fanpage przed postami na grupach: %s", fanpage_url)
+            switched = await context.fb_actions.switch_to_page_profile(fanpage_url)
+            if not switched:
+                raise NodeExecutionError(
+                    f"Nie udalo sie przelaczac na fanpage: {fanpage_url}"
+                )
+            switched_to_fanpage = True
+            if not await context.fb_actions.verify_identity_as_fanpage():
+                raise NodeExecutionError(
+                    "Weryfikacja tozsamosci nieudana — profil osobisty aktywny zamiast fanpage"
+                )
+        else:
+            # No fanpage selected — verify we ARE personal (catch leftover switches)
+            if not await context.fb_actions.verify_identity_as_personal():
+                raise NodeExecutionError(
+                    "Wykryto aktywny profil fanpage zamiast osobistego — przerywam"
+                )
 
-        results = []
-        completed = 0
-        failed = 0
-        skipped = 0
+        try:
+            # Filter groups by recurring schedule — skip if today is not a scheduled day
+            if test_mode:
+                active_groups = groups
+                logger.info("Test mode — skipping schedule filter, all %d groups active", len(groups))
+            else:
+                active_groups = _filter_scheduled_groups(groups)
 
-        for i, group in enumerate(active_groups):
-            url = _resolve_var(group.get("url", ""), context.variables)
-            if not url:
-                continue
+            results = []
+            completed = 0
+            failed = 0
+            skipped = 0
 
-            # Per-group content with fallback to default
-            group_content = group.get("content", "")
-            content = _resolve_var(group_content, context.variables) if group_content else default_content
+            for i, group in enumerate(active_groups):
+                url = _resolve_var(group.get("url", ""), context.variables)
+                if not url:
+                    continue
 
-            # Wait until planned time if set (one-shot schedule)
-            planned_date = group.get("planned_date", "")
-            planned_time = group.get("planned_time", "")
-            if planned_date and planned_time:
-                await _wait_until_planned(planned_date, planned_time)
+                # Per-group content with fallback to default
+                group_content = group.get("content", "")
+                content = _resolve_var(group_content, context.variables) if group_content else default_content
 
-            # For recurring groups, wait until recurring_time today (with jitter)
-            if group.get("recurring") and group.get("recurring_time"):
-                jitter_minutes = group.get("recurring_jitter", 0)
-                await _wait_until_recurring_time(group["recurring_time"], jitter_minutes)
+                # Wait until planned time if set (one-shot schedule)
+                if not test_mode:
+                    planned_date = group.get("planned_date", "")
+                    planned_time = group.get("planned_time", "")
+                    if planned_date and planned_time:
+                        await _wait_until_planned(planned_date, planned_time)
 
-            try:
-                success = await context.fb_actions.publish_on_group(url, content, bg_style)
-                results.append({
-                    "url": url, "success": success,
-                    "recurring": group.get("recurring", False),
-                })
-                if success:
-                    completed += 1
-                else:
+                # For recurring groups, wait until recurring_time today (with jitter)
+                if not test_mode and group.get("recurring") and group.get("recurring_time"):
+                    jitter_minutes = group.get("recurring_jitter", 0)
+                    await _wait_until_recurring_time(group["recurring_time"], jitter_minutes)
+
+                # Per-group background color
+                group_bg = group.get("background_style") or None
+
+                try:
+                    success = await context.fb_actions.publish_on_group(url, content, background_style=group_bg)
+                    results.append({
+                        "url": url, "success": success,
+                        "recurring": group.get("recurring", False),
+                    })
+                    if success:
+                        completed += 1
+                    else:
+                        failed += 1
+                except Exception as exc:
+                    logger.error("Failed to post to group %s: %s", url, exc)
+                    results.append({"url": url, "success": False, "error": str(exc)})
                     failed += 1
-            except Exception as exc:
-                logger.error("Failed to post to group %s: %s", url, exc)
-                results.append({"url": url, "success": False, "error": str(exc)})
-                failed += 1
 
-            # Brief pause between groups to avoid rate limiting
-            if i < len(active_groups) - 1:
-                delay = random.uniform(3, 8)
-                logger.info("Pausing %.1fs between group posts", delay)
-                await asyncio.sleep(delay)
+                # Brief pause between groups to avoid rate limiting
+                if i < len(active_groups) - 1:
+                    delay = random.uniform(5, 10) if test_mode else random.uniform(3, 8)
+                    logger.info("Pausing %.1fs between group posts", delay)
+                    await asyncio.sleep(delay)
 
-        skipped = len(groups) - len(active_groups)
+            skipped = len(groups) - len(active_groups)
 
-        if len(active_groups) == 0:
-            logger.info("No groups active today (all %d skipped by schedule)", len(groups))
-            context.variables["last_publish_result"] = "skipped"
+            if len(active_groups) == 0:
+                logger.info("No groups active today (all %d skipped by schedule)", len(groups))
+                context.variables["last_publish_result"] = "skipped"
+                return {
+                    "total": len(groups),
+                    "active": 0,
+                    "completed": 0,
+                    "failed": 0,
+                    "skipped": skipped,
+                    "results": [],
+                }
+
+            context.variables["last_publish_result"] = "success" if failed == 0 else "partial" if completed > 0 else "failed"
             return {
                 "total": len(groups),
-                "active": 0,
-                "completed": 0,
-                "failed": 0,
+                "active": len(active_groups),
+                "completed": completed,
+                "failed": failed,
                 "skipped": skipped,
-                "results": [],
+                "results": results,
             }
 
-        context.variables["last_publish_result"] = "success" if failed == 0 else "partial" if completed > 0 else "failed"
-        return {
-            "total": len(groups),
-            "active": len(active_groups),
-            "completed": completed,
-            "failed": failed,
-            "skipped": skipped,
-            "results": results,
-        }
+        finally:
+            if switched_to_fanpage:
+                try:
+                    await context.fb_actions.switch_to_personal_profile()
+                    logger.info("Przywrocono profil osobisty po postach na grupach")
+                except Exception as e:
+                    logger.warning("Nie udalo sie przywrocic profilu osobistego: %s", e)
+                context.fb_actions._current_page_name = None
 
     def validate_config(self, config: dict) -> list[str]:
         errors = []
         groups = config.get("groups", [])
         if not groups and not config.get("group_url"):
-            errors.append("Dodaj przynajmniej jedna grupe")
+            errors.append("Dodaj przynajmniej jedną grupę")
         # Content can be per-group or default
         has_any_content = config.get("default_content") or config.get("content") or any(g.get("content") for g in groups)
         if not has_any_content:
-            errors.append("Tresc posta jest wymagana (domyslna lub per grupa)")
+            errors.append("Treść posta jest wymagana (domyślna lub per grupa)")
+        fanpage = config.get("publish_as_fanpage", "")
+        if fanpage and "facebook.com" not in fanpage:
+            errors.append("URL fanpage musi zawierać facebook.com")
         return errors
 
 
@@ -213,12 +257,23 @@ class PostFanpageNode(BaseNode):
     async def execute(self, context: "ExecutionContext", config: dict) -> dict:
         fanpage_url = _resolve_var(config.get("fanpage_url", ""), context.variables)
         content = _resolve_var(config.get("content", ""), context.variables)
+        background_style = config.get("background_style") or None
 
         if not context.fb_actions:
             raise NodeExecutionError("No browser session")
 
-        success = await context.fb_actions.publish_on_fanpage(fanpage_url, content)
+        success = await context.fb_actions.publish_on_fanpage(
+            fanpage_url, content, background_style=background_style
+        )
         return {"success": success, "fanpage_url": fanpage_url}
+
+    def validate_config(self, config: dict) -> list[str]:
+        errors = []
+        if not config.get("fanpage_url"):
+            errors.append("URL fanpage jest wymagany")
+        if not config.get("content"):
+            errors.append("Treść posta jest wymagana")
+        return errors
 
 
 class LikePageNode(BaseNode):
@@ -277,6 +332,7 @@ class WaitNode(BaseNode):
     max_retries = 0
 
     async def execute(self, context: "ExecutionContext", config: dict) -> dict:
+        test_mode = context.variables.get("test_mode", False)
         duration = config.get("duration", 1)
         unit = config.get("unit", "s")
 
@@ -285,6 +341,13 @@ class WaitNode(BaseNode):
 
         if config.get("random_variation"):
             total_seconds *= random.uniform(0.8, 1.2)
+
+        # Test mode — short delay instead of full wait
+        if test_mode:
+            short = random.uniform(5, 10)
+            logger.info("Test mode — waiting %.1fs instead of %.1fs", short, total_seconds)
+            await asyncio.sleep(short)
+            return {"waited": short, "skipped_test_mode": True}
 
         # Check if resuming from a previously persisted wait
         wait_until = context.node_outputs.get(context.current_node_id, {}).get("wait_until")
