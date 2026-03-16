@@ -180,8 +180,15 @@ class PostGroupNode(BaseNode):
                 # Per-group background color
                 group_bg = group.get("background_style") or None
 
+                # Per-group media files with fallback to default
+                group_media = group.get("media_files") or config.get("default_media_files") or []
+
                 try:
-                    success = await context.fb_actions.publish_on_group(url, content, background_style=group_bg)
+                    success = await context.fb_actions.publish_on_group(
+                        url, content,
+                        media_urls=group_media or None,
+                        background_style=group_bg,
+                    )
                     results.append({
                         "url": url, "success": success,
                         "recurring": group.get("recurring", False),
@@ -258,12 +265,15 @@ class PostFanpageNode(BaseNode):
         fanpage_url = _resolve_var(config.get("fanpage_url", ""), context.variables)
         content = _resolve_var(config.get("content", ""), context.variables)
         background_style = config.get("background_style") or None
+        media_files = config.get("media_files") or []
 
         if not context.fb_actions:
             raise NodeExecutionError("No browser session")
 
         success = await context.fb_actions.publish_on_fanpage(
-            fanpage_url, content, background_style=background_style
+            fanpage_url, content,
+            background_style=background_style,
+            media_urls=media_files or None,
         )
         return {"success": success, "fanpage_url": fanpage_url}
 

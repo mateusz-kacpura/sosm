@@ -4,11 +4,12 @@ import { useCallback, useEffect, useState } from "react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
-import { X, Calendar, FileText } from "lucide-react"
+import { X, Calendar, FileText, ImagePlus, Film } from "lucide-react"
 import type { Node } from "@xyflow/react"
 import type { WorkflowNodeData } from "./nodes/base-node"
 import { GroupScheduleModal, type PostGroupsConfig } from "./group-schedule-modal"
 import { FB_BACKGROUNDS } from "@/app/campaigns/spreadsheet"
+import { api, uploadMedia } from "@/lib/api"
 
 interface NodeConfigPanelProps {
   node: Node<WorkflowNodeData> | null
@@ -21,6 +22,7 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
   const [config, setConfig] = useState<Record<string, any>>({})
   const [label, setLabel] = useState("")
   const [showScheduleModal, setShowScheduleModal] = useState(false)
+  const [mediaUploading, setMediaUploading] = useState(false)
 
   useEffect(() => {
     if (node) {
@@ -45,6 +47,29 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
     },
     [node, onUpdate],
   )
+
+  const handleFanpageMedia = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files
+    if (!fileList || fileList.length === 0) return
+    setMediaUploading(true)
+    try {
+      const result = await uploadMedia(Array.from(fileList))
+      const newNames = (result.files || []).map((f: any) => f.filename)
+      const merged = [...(config.media_files || []), ...newNames]
+      updateField("media_files", merged)
+    } catch (err) {
+      console.error("Media upload failed:", err)
+    } finally {
+      setMediaUploading(false)
+      e.target.value = ""
+    }
+  }, [config, updateField])
+
+  const removeFanpageMedia = useCallback((filename: string) => {
+    const updated = (config.media_files || []).filter((f: string) => f !== filename)
+    updateField("media_files", updated)
+    api.media.delete(filename).catch(() => {})
+  }, [config, updateField])
 
   if (!node) return null
 
@@ -124,6 +149,12 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
                   <span>{(config.groups || []).filter((g: any) => g.background_style).length} z tłem</span>
                 </div>
               )}
+              {(config.default_media_files?.length > 0) && (
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <ImagePlus className="h-3 w-3" />
+                  <span>{config.default_media_files.length} {config.default_media_files.length === 1 ? "plik" : "plików"} media</span>
+                </div>
+              )}
             </div>
 
             <Button
@@ -146,6 +177,7 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
                   active_hours_end: config.active_hours_end || "20:00",
                   spread_minutes: config.spread_minutes || 15,
                   publish_as_fanpage: config.publish_as_fanpage || "",
+                  default_media_files: config.default_media_files || [],
                 }}
                 onSave={(newConfig: PostGroupsConfig) => {
                   const merged = {
@@ -157,6 +189,7 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
                     active_hours_end: newConfig.active_hours_end,
                     spread_minutes: newConfig.spread_minutes,
                     publish_as_fanpage: newConfig.publish_as_fanpage,
+                    default_media_files: newConfig.default_media_files,
                   }
                   setConfig(merged)
                   if (node) onUpdate(node.id, { config: merged })
@@ -188,6 +221,53 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
               />
               {config.background_style && (
                 <p className="text-[10px] text-muted-foreground">Maks. 100 znaków z tłem</p>
+              )}
+            </div>
+            {/* Media upload */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs flex items-center gap-1">
+                  <ImagePlus className="h-3 w-3 text-primary" />
+                  Media
+                </Label>
+                <label className={`text-[10px] cursor-pointer ${mediaUploading ? "text-muted-foreground" : "text-primary hover:text-primary/80"}`}>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime"
+                    multiple
+                    onChange={handleFanpageMedia}
+                    disabled={mediaUploading}
+                    className="hidden"
+                  />
+                  {mediaUploading ? "..." : "+ Dodaj"}
+                </label>
+              </div>
+              {(config.media_files?.length > 0) && (
+                <div className="flex flex-wrap gap-1.5">
+                  {(config.media_files || []).map((filename: string) => {
+                    const isVideo = filename.endsWith(".mp4") || filename.endsWith(".mov")
+                    return (
+                      <div key={filename} className="relative group">
+                        <div className="h-12 w-12 rounded border border-primary/10 bg-secondary/50 flex items-center justify-center overflow-hidden">
+                          {isVideo ? (
+                            <Film className="h-4 w-4 text-muted-foreground" />
+                          ) : (
+                            <ImagePlus className="h-4 w-4 text-muted-foreground" />
+                          )}
+                        </div>
+                        <button
+                          onClick={() => removeFanpageMedia(filename)}
+                          className="absolute -top-1 -right-1 h-3.5 w-3.5 rounded-full bg-rose-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <X className="h-2 w-2" />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              {(config.media_files?.length > 0) && (
+                <p className="text-[9px] text-muted-foreground">Media i tło się wykluczają</p>
               )}
             </div>
             <div className="space-y-1">

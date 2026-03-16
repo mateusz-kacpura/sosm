@@ -1,6 +1,11 @@
+import asyncio
 import json as _json
 import logging
 import os
+
+import nodriver.cdp.dom
+import nodriver.cdp.page
+import nodriver.cdp.runtime
 
 from .human_imitation import HumanImitation
 from .checkpoint_detector import CheckpointDetector
@@ -103,6 +108,192 @@ class PublishMixin:
             return True
 
         logger.warning("Nieznany styl tla: %s", background_style)
+        return False
+
+    async def _attach_media(self, media_paths: list[str]) -> bool:
+        """Attach media files to the current post composer via CDP.
+
+        1. Click "Zdjęcie/film" button via find_media_button()
+        2. Enable file chooser interception
+        3. Find <input type="file"> and set files via DOM.set_file_input_files
+        4. Wait for preview thumbnails
+        """
+        from .dom_walker import _eval_js
+
+        logger.info("Attaching %d media file(s)", len(media_paths))
+
+        # Normalize paths (CDP requires clean absolute paths without '..' components)
+        media_paths = [os.path.realpath(p) for p in media_paths]
+
+        # Verify all files exist
+        for path in media_paths:
+            if not os.path.isfile(path):
+                logger.error("Media file not found: %s", path)
+                return False
+
+        # Step 1: Click the media button in the dialog toolbar
+        media_btn = await self.dom.find_media_button(timeout=5.0)
+        if not media_btn:
+            logger.warning("Nie znaleziono przycisku Zdjecie/film")
+            os.makedirs(self.screenshot_dir, exist_ok=True)
+            await self.tab.save_screenshot(
+                os.path.join(self.screenshot_dir, f"media_btn_not_found_{self.account_email}.png")
+            )
+            return False
+
+        logger.info("Klikam przycisk Zdjecie/film: '%s'", media_btn.get("text", "?"))
+        await mouse_engine.click_element(self.tab, media_btn)
+        await HumanImitation.human_delay(1, 2)
+
+        # Step 2: Find the file input and set files via CDP
+        backend_node_id = await self._find_file_input()
+        if not backend_node_id:
+            logger.warning("Nie znaleziono input[type=file] w dialogu")
+            os.makedirs(self.screenshot_dir, exist_ok=True)
+            await self.tab.save_screenshot(
+                os.path.join(self.screenshot_dir, f"file_input_not_found_{self.account_email}.png")
+            )
+            return False
+
+        logger.info("Ustawiam pliki via CDP: %s", [os.path.basename(p) for p in media_paths])
+        try:
+            await self.tab.send(nodriver.cdp.dom.set_file_input_files(
+                files=media_paths,
+                backend_node_id=nodriver.cdp.dom.BackendNodeId(backend_node_id),
+            ))
+        except Exception as e:
+            logger.error("CDP set_file_input_files failed: %s", e)
+            return False
+
+        # Step 3: Wait for media preview to appear
+        preview_ok = await self._verify_media_preview(timeout=15.0)
+        if not preview_ok:
+            logger.warning("Media preview nie pojawil sie — pliki mogly nie zostac zaladowane")
+            os.makedirs(self.screenshot_dir, exist_ok=True)
+            await self.tab.save_screenshot(
+                os.path.join(self.screenshot_dir, f"media_preview_missing_{self.account_email}.png")
+            )
+            return False
+
+        logger.info("Media preview confirmed — %d plik(ow) zaladowanych", len(media_paths))
+        return True
+
+    async def _find_file_input(self) -> int | None:
+        """Find hidden <input type='file'> in the dialog and return its backend_node_id."""
+        from .dom_walker import _eval_js
+
+        # Use JS to find the input element and get a RemoteObjectId,
+        # then resolve it to a backend_node_id via CDP
+        js = """(() => {
+            const dialogs = document.querySelectorAll("div[role='dialog']");
+            let dialog = null;
+            for (const d of dialogs) {
+                const r = d.getBoundingClientRect();
+                if (r.width > 100 && r.height > 100) { dialog = d; break; }
+            }
+            const scope = dialog || document;
+
+            // Find file inputs — Facebook hides them but they exist in DOM
+            const inputs = scope.querySelectorAll("input[type='file']");
+            if (inputs.length > 0) return true;
+
+            // Also check body-level file inputs (FB sometimes appends them to body)
+            const bodyInputs = document.querySelectorAll("input[type='file']");
+            if (bodyInputs.length > 0) return true;
+
+            return false;
+        })()"""
+
+        # Wait for file input to appear (clicking media button may take a moment)
+        for _ in range(10):
+            has_input = await _eval_js(self.tab, js)
+            if has_input:
+                break
+            await asyncio.sleep(0.5)
+        else:
+            return None
+
+        # Now get the backend_node_id via CDP
+        # Use Runtime.evaluate to get a RemoteObject for the input element
+        result = await self.tab.send(nodriver.cdp.runtime.evaluate(
+            expression="""(() => {
+                // Prefer inputs inside dialog
+                const dialogs = document.querySelectorAll("div[role='dialog']");
+                let dialog = null;
+                for (const d of dialogs) {
+                    const r = d.getBoundingClientRect();
+                    if (r.width > 100 && r.height > 100) { dialog = d; break; }
+                }
+
+                const scope = dialog || document;
+                let input = scope.querySelector("input[type='file'][accept*='image'], input[type='file'][accept*='video']");
+                if (!input) input = scope.querySelector("input[type='file']");
+                if (!input) input = document.querySelector("input[type='file']");
+                return input;
+            })()""",
+            return_by_value=False,
+        ))
+
+        remote_obj = result[0] if isinstance(result, tuple) else result
+        if not remote_obj or not remote_obj.object_id:
+            return None
+
+        # Resolve RemoteObject → DOM.Node with backendNodeId
+        desc = await self.tab.send(nodriver.cdp.dom.describe_node(
+            object_id=remote_obj.object_id,
+        ))
+        node_desc = desc if not isinstance(desc, tuple) else desc[0]
+        if node_desc and node_desc.backend_node_id:
+            return int(node_desc.backend_node_id)
+        return None
+
+    async def _verify_media_preview(self, timeout: float = 15.0) -> bool:
+        """Verify media thumbnails appeared in composer dialog."""
+        from .dom_walker import _eval_js
+
+        js = """(() => {
+            const dialogs = document.querySelectorAll("div[role='dialog']");
+            let dialog = null;
+            for (const d of dialogs) {
+                const r = d.getBoundingClientRect();
+                if (r.width > 100 && r.height > 100) { dialog = d; break; }
+            }
+            if (!dialog) return false;
+
+            // Look for preview images: blob: or data: src, or large thumbnails
+            const imgs = dialog.querySelectorAll('img');
+            for (const img of imgs) {
+                const src = img.getAttribute('src') || '';
+                const r = img.getBoundingClientRect();
+                // Media previews are typically > 60px and use blob: URLs
+                if (r.width > 60 && r.height > 60) {
+                    if (src.startsWith('blob:') || src.startsWith('data:')) return true;
+                    // FB sometimes uses scontent CDN for uploaded previews
+                    if (src.includes('scontent') && r.width > 100) return true;
+                }
+            }
+
+            // Also check for video elements (video previews)
+            const videos = dialog.querySelectorAll('video');
+            for (const v of videos) {
+                const r = v.getBoundingClientRect();
+                if (r.width > 60 && r.height > 60) return true;
+            }
+
+            // Check for any new container that appeared after file selection
+            // (FB adds a media preview area with specific structure)
+            const previews = dialog.querySelectorAll('[data-testid*="media"], [data-testid*="photo"], [data-testid*="video"]');
+            if (previews.length > 0) return true;
+
+            return false;
+        })()"""
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            result = await _eval_js(self.tab, js)
+            if result:
+                return True
+            await asyncio.sleep(1.0)
         return False
 
     async def _find_home_composer(self) -> dict | None:
@@ -479,8 +670,12 @@ class PublishMixin:
             await mouse_engine.click_element(self.tab, editor)
             await HumanImitation.type_like_human(self.tab, text, delay_range=(0.02, 0.08))
 
-            if media_urls:
-                logger.info("TODO: Dodawanie zdjec nieobslugiwane w pierwszym MVP")
+            if media_urls and not background_style:
+                from app.core.config import settings
+                media_paths = [os.path.join(settings.MEDIA_DIR, fn) for fn in media_urls]
+                media_ok = await self._attach_media(media_paths)
+                if not media_ok:
+                    logger.warning("Nie udalo sie dolaczyc mediow — kontynuuje publikacje bez mediow")
 
             await HumanImitation.human_delay(2, 4)
 
@@ -529,7 +724,8 @@ class PublishMixin:
             return False
 
     async def publish_on_fanpage(self, fanpage_url: str, text: str,
-                                  background_style: str = None) -> bool:
+                                  background_style: str = None,
+                                  media_urls=None) -> bool:
         """Publish a text post on a Facebook fanpage AS the fanpage.
 
         Switches identity to the fanpage before posting, and switches back
@@ -564,9 +760,21 @@ class PublishMixin:
             # Check if dialog opened
             dialog_check = await self.dom.find("div[role='dialog']", timeout=3.0)
             if not dialog_check:
-                logger.warning("Klikniecie composera nie otworzylo dialogu — retry")
+                logger.warning("Klikniecie composera nie otworzylo dialogu — screenshot + retry")
+                os.makedirs(self.screenshot_dir, exist_ok=True)
+                await self.tab.save_screenshot(
+                    os.path.join(self.screenshot_dir, f"fanpage_no_dialog_{self.account_email}.png")
+                )
+
+                # Scroll to top and retry with fresh composer search
+                from .dom_walker import _eval_js
+                await _eval_js(self.tab, "window.scrollTo(0, 0)")
+                await HumanImitation.human_delay(1, 2)
+
                 post_box2 = await self._find_home_composer()
                 if post_box2:
+                    logger.info("Retry composer: '%s' at y=%.0f",
+                                post_box2.get("text", "")[:50], post_box2.get("y", 0))
                     await mouse_engine.click_element(self.tab, post_box2)
                     await HumanImitation.human_delay(2, 4)
 
@@ -610,6 +818,15 @@ class PublishMixin:
             # Step 4: Type content
             await mouse_engine.click_element(self.tab, editor)
             await HumanImitation.type_like_human(self.tab, text, delay_range=(0.02, 0.08))
+
+            # Step 4b: Attach media files (mutually exclusive with background)
+            if media_urls and not background_style:
+                from app.core.config import settings
+                media_paths = [os.path.join(settings.MEDIA_DIR, fn) for fn in media_urls]
+                media_ok = await self._attach_media(media_paths)
+                if not media_ok:
+                    logger.warning("Nie udalo sie dolaczyc mediow — kontynuuje publikacje bez mediow")
+
             await HumanImitation.human_delay(2, 4)
 
             # Step 5: Click Publish

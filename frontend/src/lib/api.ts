@@ -45,6 +45,29 @@ async function fetchHostAgent(endpoint: string, options: RequestInit = {}) {
   return response.json()
 }
 
+const API_BASE_URL_RAW = process.env.NEXT_PUBLIC_API_URL || "/api"
+
+export async function uploadMedia(files: File[]) {
+  const formData = new FormData()
+  for (const file of files) {
+    formData.append("files", file)
+  }
+  const response = await fetch(`${API_BASE_URL_RAW}/media/upload`, {
+    method: "POST",
+    credentials: "include",
+    body: formData,
+    // No Content-Type header — browser sets multipart boundary automatically
+  })
+  if (response.status === 401) {
+    window.location.reload()
+    throw new Error("Session expired")
+  }
+  if (!response.ok) {
+    throw new Error(`Upload Error: ${response.statusText}`)
+  }
+  return response.json()
+}
+
 export const api = {
   accounts: {
     list: () => fetchApi("/accounts/"),
@@ -89,6 +112,11 @@ export const api = {
     create: (data: { account_id?: number; visit_external_sites?: boolean }) =>
       fetchApi("/fingerprint-tests/", { method: "POST", body: JSON.stringify(data) }),
     delete: (id: number) => fetchApi(`/fingerprint-tests/${id}`, { method: "DELETE" }),
+  },
+  media: {
+    upload: uploadMedia,
+    delete: (filename: string) => fetchApi(`/media/${filename}`, { method: "DELETE" }),
+    list: () => fetchApi("/media/list"),
   },
   workflows: {
     list: () => fetchApi("/workflows/"),

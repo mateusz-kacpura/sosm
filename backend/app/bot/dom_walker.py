@@ -665,6 +665,117 @@ class DomWalker:
                 return None
             await asyncio.sleep(0.3)
 
+    async def find_media_button(self, timeout: float = 5.0) -> ElementRect | None:
+        """Find the 'Zdjęcie/film' (Photo/video) button in the post dialog toolbar.
+
+        Language-independent: tries aria-label matching first, then falls back
+        to toolbar icon detection (similar to find_background_button).
+        """
+        js = """(() => {
+            const dialogs = document.querySelectorAll("div[role='dialog']");
+            let dialog = null;
+            for (const d of dialogs) {
+                const r = d.getBoundingClientRect();
+                if (r.width > 100 && r.height > 100) { dialog = d; break; }
+            }
+            if (!dialog) return null;
+
+            function mkResult(el, tag) {
+                const clickable = el.closest("[role='button'], [tabindex]") || el.parentElement;
+                const r = clickable.getBoundingClientRect();
+                if (r.width > 10 && r.height > 10) {
+                    return {x: r.x, y: r.y, w: r.width, h: r.height, text: tag};
+                }
+                return null;
+            }
+
+            // Strategy 1: aria-label matching (PL, EN, TH and more)
+            const mediaLabels = [
+                'zdjęcie/film', 'zdjecie/film', 'photo/video',
+                'foto/video', 'รูปภาพ/วิดีโอ', 'bild/video',
+                'photo ou vidéo', 'foto/vídeo',
+            ];
+            const btns = dialog.querySelectorAll("[role='button'][aria-label], [tabindex][aria-label]");
+            for (const btn of btns) {
+                const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+                if (mediaLabels.some(ml => label.includes(ml))) {
+                    const r = btn.getBoundingClientRect();
+                    if (r.width > 10 && r.height > 10) {
+                        return {x: r.x, y: r.y, w: r.width, h: r.height, text: 'aria:' + label.slice(0, 40)};
+                    }
+                }
+            }
+
+            // Strategy 2: toolbar icon — find img icons below textbox,
+            // look for the photo/video icon (NOT the Aa/background icon).
+            // The photo/video toolbar item typically contains an icon with
+            // a green-ish color or specific CDN pattern.
+            const textbox = dialog.querySelector("div[role='textbox']");
+            if (!textbox) return null;
+            const tbRect = textbox.getBoundingClientRect();
+
+            const imgs = dialog.querySelectorAll('img');
+            const candidates = [];
+            for (const img of imgs) {
+                const r = img.getBoundingClientRect();
+                if (r.width < 18 || r.width > 48) continue;
+                if (r.height < 18 || r.height > 48) continue;
+                if (r.y < tbRect.bottom - 10) continue;
+                candidates.push({ img, r });
+            }
+
+            // Group by Y to find toolbar rows
+            if (candidates.length > 0) {
+                candidates.sort((a, b) => a.r.y - b.r.y);
+                const rows = [[candidates[0]]];
+                for (let i = 1; i < candidates.length; i++) {
+                    const lastRow = rows[rows.length - 1];
+                    if (Math.abs(candidates[i].r.y - lastRow[0].r.y) < 15) {
+                        lastRow.push(candidates[i]);
+                    } else {
+                        rows.push([candidates[i]]);
+                    }
+                }
+
+                // Find toolbar row (>=2 icons) — take the LAST one
+                // (the "Add to your post" row, not the background swatch row)
+                let toolbarRow = null;
+                for (const row of rows) {
+                    if (row.length >= 2) toolbarRow = row;
+                }
+
+                if (toolbarRow) {
+                    // Check URL patterns for photo/video icon
+                    for (const c of toolbarRow) {
+                        const src = (c.img.getAttribute('src') || '').toLowerCase();
+                        if (src.includes('photo') || src.includes('video')
+                            || src.includes('media') || src.includes('image')
+                            || src.includes('camera')) {
+                            const res = mkResult(c.img, 'toolbar_url');
+                            if (res) return res;
+                        }
+                    }
+                    // Fallback: second icon in toolbar (first is typically Aa)
+                    if (toolbarRow.length >= 2) {
+                        const res = mkResult(toolbarRow[1].img, 'toolbar_second');
+                        if (res) return res;
+                    }
+                }
+            }
+
+            return null;
+        })()"""
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        while True:
+            result = await _eval_js(self.tab, js)
+            if result is not None:
+                logger.info("Media button found via: %s", result.get("text", "?"))
+                return result
+            if asyncio.get_event_loop().time() >= deadline:
+                return None
+            await asyncio.sleep(0.5)
+
     async def find_login_button(self, timeout: float = 5.0) -> ElementRect | None:
         """Find Facebook login submit button across all page layouts/languages.
 

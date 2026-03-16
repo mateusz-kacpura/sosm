@@ -5,7 +5,9 @@ import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import {
   X, Maximize2, Minimize2, ClipboardPaste, Wand2, Trash2, Plus, RefreshCw,
+  ImagePlus, Film,
 } from "lucide-react"
+import { api, uploadMedia } from "@/lib/api"
 import {
   FB_BACKGROUNDS, getBgColor,
   SPREAD_STEPS, formatSpread,
@@ -24,6 +26,7 @@ export interface GroupEntry {
   recurring_time: string    // "HH:MM"
   recurring_jitter: number  // 0-120 minutes of random deviation
   background_style: string  // per-group bg override (empty = use global)
+  media_files: string[]     // uploaded filenames
 }
 
 export interface PostGroupsConfig {
@@ -34,6 +37,7 @@ export interface PostGroupsConfig {
   active_hours_end: string
   spread_minutes: number
   publish_as_fanpage: string  // fanpage URL or "" (personal profile)
+  default_media_files: string[]  // shared media for all groups
 }
 
 interface GroupScheduleModalProps {
@@ -58,7 +62,7 @@ function pad(n: number) {
 }
 
 function makeEmptyGroup(): GroupEntry {
-  return { url: "", content: "", planned_date: "", planned_time: "", recurring: false, recurring_days: [], recurring_time: "10:00", recurring_jitter: 15, background_style: "" }
+  return { url: "", content: "", planned_date: "", planned_time: "", recurring: false, recurring_days: [], recurring_time: "10:00", recurring_jitter: 15, background_style: "", media_files: [] }
 }
 
 function formatJitter(minutes: number): string {
@@ -123,6 +127,7 @@ function generateSchedule(
       recurring_time: "10:00",
       recurring_jitter: 15,
       background_style: "",
+      media_files: [],
     }
   })
 }
@@ -148,6 +153,7 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
       recurring_time: g.recurring_time || "10:00",
       recurring_jitter: g.recurring_jitter ?? 15,
       background_style: g.background_style || "",
+      media_files: g.media_files || [],
     }))
   )
   const [defaultContent, setDefaultContent] = useState(config.default_content || "")
@@ -158,6 +164,8 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
     return idx >= 0 ? idx : 3
   })
   const [publishAsFanpage, setPublishAsFanpage] = useState(config.publish_as_fanpage || "")
+  const [defaultMediaFiles, setDefaultMediaFiles] = useState<string[]>(config.default_media_files || [])
+  const [mediaUploading, setMediaUploading] = useState(false)
   const [rawText, setRawText] = useState("")
   const [showBgPicker, setShowBgPicker] = useState(false)
   const [bgPickerTarget, setBgPickerTarget] = useState<number>(0)
@@ -225,6 +233,27 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
     }))
   }, [])
 
+  const handleMediaUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files
+    if (!fileList || fileList.length === 0) return
+    setMediaUploading(true)
+    try {
+      const result = await uploadMedia(Array.from(fileList))
+      const newNames = (result.files || []).map((f: any) => f.filename)
+      setDefaultMediaFiles((prev) => [...prev, ...newNames])
+    } catch (err) {
+      console.error("Media upload failed:", err)
+    } finally {
+      setMediaUploading(false)
+      e.target.value = ""
+    }
+  }, [])
+
+  const removeDefaultMedia = useCallback((filename: string) => {
+    setDefaultMediaFiles((prev) => prev.filter((f) => f !== filename))
+    api.media.delete(filename).catch(() => {})
+  }, [])
+
   const handleSave = useCallback(() => {
     onSave({
       groups,
@@ -234,9 +263,10 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
       active_hours_end: activeHoursEnd,
       spread_minutes: spreadMin,
       publish_as_fanpage: publishAsFanpage,
+      default_media_files: defaultMediaFiles,
     })
     onClose()
-  }, [groups, defaultContent, activeHoursStart, activeHoursEnd, spreadMin, publishAsFanpage, onSave, onClose])
+  }, [groups, defaultContent, activeHoursStart, activeHoursEnd, spreadMin, publishAsFanpage, defaultMediaFiles, onSave, onClose])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -300,6 +330,65 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
                            placeholder:text-muted-foreground/50"
                 placeholder="https://www.facebook.com/nazwa-fanpage"
               />
+            )}
+          </div>
+
+          {/* Default Media */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs flex items-center gap-1.5">
+                <ImagePlus className="h-3.5 w-3.5 text-primary" />
+                Media (zdjęcia / filmy)
+              </Label>
+              <label className={`text-[10px] cursor-pointer transition-colors ${mediaUploading ? "text-muted-foreground" : "text-primary hover:text-primary/80"}`}>
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime"
+                  multiple
+                  onChange={handleMediaUpload}
+                  disabled={mediaUploading}
+                  className="hidden"
+                />
+                {mediaUploading ? "Przesyłanie..." : "+ Dodaj pliki"}
+              </label>
+            </div>
+            {defaultMediaFiles.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {defaultMediaFiles.map((filename) => {
+                  const isVideo = filename.endsWith(".mp4") || filename.endsWith(".mov")
+                  return (
+                    <div key={filename} className="relative group">
+                      <div className="h-16 w-16 rounded-md border border-primary/10 bg-secondary/50 flex items-center justify-center overflow-hidden">
+                        {isVideo ? (
+                          <Film className="h-6 w-6 text-muted-foreground" />
+                        ) : (
+                          <img
+                            src={`/api/media/file/${filename}`}
+                            alt={filename}
+                            className="h-full w-full object-cover"
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = "none" }}
+                          />
+                        )}
+                      </div>
+                      <button
+                        onClick={() => removeDefaultMedia(filename)}
+                        className="absolute -top-1.5 -right-1.5 h-4 w-4 rounded-full bg-rose-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                      <p className="text-[8px] text-muted-foreground truncate w-16 mt-0.5" title={filename}>
+                        {filename.replace(/^[a-f0-9]+_/, "")}
+                      </p>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            {defaultMediaFiles.length > 0 && (
+              <p className="text-[10px] text-muted-foreground">
+                {defaultMediaFiles.length} {defaultMediaFiles.length === 1 ? "plik" : defaultMediaFiles.length < 5 ? "pliki" : "plików"}
+                {" · "}Media i tło wzajemnie się wykluczają
+              </p>
             )}
           </div>
 

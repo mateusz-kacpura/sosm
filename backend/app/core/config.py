@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     DONUT_API_TOKEN: str = ""
     FINGERPRINT_PROFILE_ID: str = ""
     BROWSER_CONCURRENCY: int = 10
+    MEDIA_UPLOAD_DIR: str = ""
+
+    @property
+    def MEDIA_DIR(self) -> str:
+        if self.MEDIA_UPLOAD_DIR:
+            return self.MEDIA_UPLOAD_DIR
+        return os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'media_uploads'))
 
     @property
     def DATA_DIR(self) -> str:

@@ -1,5 +1,7 @@
+import os
 import random
-from fastapi import APIRouter, Depends, HTTPException
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func as sa_func
 from typing import List
@@ -508,6 +510,88 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
         "posts_today": posts_today,
         "success_rate": success_rate,
     }
+
+
+# --- Media Upload ---
+
+ALLOWED_MEDIA_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".mov"}
+MAX_MEDIA_SIZE = 500 * 1024 * 1024  # 500MB
+
+
+@router.post("/media/upload")
+async def upload_media(files: List[UploadFile] = File(...)):
+    from app.core.config import settings
+    media_dir = settings.MEDIA_DIR
+    os.makedirs(media_dir, exist_ok=True)
+
+    results = []
+    for f in files:
+        ext = os.path.splitext(f.filename or "")[1].lower()
+        if ext not in ALLOWED_MEDIA_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Nieobslugiwany format: {ext} (dozwolone: {', '.join(ALLOWED_MEDIA_EXTENSIONS)})",
+            )
+
+        safe_name = f"{uuid.uuid4().hex[:12]}_{f.filename}"
+        path = os.path.join(media_dir, safe_name)
+
+        content = await f.read()
+        if len(content) > MAX_MEDIA_SIZE:
+            raise HTTPException(status_code=400, detail=f"Plik za duzy: {f.filename} ({len(content)} B, max {MAX_MEDIA_SIZE} B)")
+
+        with open(path, "wb") as fh:
+            fh.write(content)
+
+        media_type = "video" if ext in {".mp4", ".mov"} else "image"
+        results.append({
+            "filename": safe_name,
+            "original_name": f.filename,
+            "size": len(content),
+            "type": media_type,
+        })
+
+    return {"files": results}
+
+
+@router.delete("/media/{filename}")
+async def delete_media(filename: str):
+    from app.core.config import settings
+
+    # Prevent path traversal
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Nieprawidlowa nazwa pliku")
+
+    path = os.path.join(settings.MEDIA_DIR, filename)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Plik nie znaleziony")
+
+    os.remove(path)
+    return {"detail": "Plik usuniety"}
+
+
+@router.get("/media/list")
+async def list_media():
+    from app.core.config import settings
+    media_dir = settings.MEDIA_DIR
+    if not os.path.isdir(media_dir):
+        return {"files": []}
+
+    files = []
+    for name in sorted(os.listdir(media_dir)):
+        path = os.path.join(media_dir, name)
+        if not os.path.isfile(path):
+            continue
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in ALLOWED_MEDIA_EXTENSIONS:
+            continue
+        media_type = "video" if ext in {".mp4", ".mov"} else "image"
+        files.append({
+            "filename": name,
+            "size": os.path.getsize(path),
+            "type": media_type,
+        })
+    return {"files": files}
 
 
 # --- Fingerprint Tests ---
