@@ -204,53 +204,118 @@ class PublishMixin:
         return True
 
     async def verify_identity_as_personal(self) -> bool:
-        """Navigate to HOME and verify the active identity is NOT a fanpage.
+        """Verify and ensure the active identity is the personal profile.
 
-        Call before publishing as personal profile to catch leftover switches.
-        Returns True if personal profile confirmed (or inconclusive),
-        False if a fanpage identity is detected.
+        Always performs a real check (never relies on in-memory state alone),
+        because the browser may still be on a fanpage from a previous run.
+        If a fanpage identity is detected, automatically switches to personal.
+
+        Returns True if personal profile confirmed or restored,
+        False only if auto-recovery failed.
         """
         from .dom_walker import _eval_js
+        import re
 
-        # Quick check: if no page switch happened, we're almost certainly personal
-        if not self._current_page_name:
-            logger.info("IDENTITY OK: profil osobisty (brak przelaczenia na fanpage)")
-            return True
+        logger.info("Weryfikacja tozsamosci: oczekiwany profil osobisty")
 
-        # _current_page_name is set — a switch happened and wasn't cleared properly
-        logger.warning(
-            "Wykryto _current_page_name='%s' — sprawdzam composer na HOME",
-            self._current_page_name,
-        )
-        await self.tab.get("https://www.facebook.com/")
-        await HumanImitation.human_delay(3, 6)
+        # Step 1: Navigate to /me and check redirect URL + page indicators
+        await self.tab.get("https://www.facebook.com/me")
+        await HumanImitation.human_delay(3, 5)
 
-        await _eval_js(self.tab, "window.scrollTo(0, 0)")
-        await HumanImitation.human_delay(1, 2)
+        me_check = await _eval_js(self.tab, """(() => {
+            const url = window.location.href;
+            const og = document.querySelector('meta[property="og:title"]');
+            const name = og ? og.getAttribute('content') || ''
+                           : document.title.replace(/\\s*[|·-]\\s*Facebook.*$/i, '').trim();
 
-        post_box = await self._find_home_composer()
-        if not post_box:
-            logger.warning("Nie znaleziono composera na HOME — nie mozna zweryfikowac")
-            return True
+            // Page-specific management UI (never on personal profiles)
+            const pageEls = document.querySelectorAll(
+                '[href*="professional_dashboard"], '
+                + '[href*="business.facebook.com"], '
+                + '[data-pageid], '
+                + 'a[href*="/insights/"]'
+            );
+            let pageCount = 0;
+            for (const el of pageEls) {
+                const r = el.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) pageCount++;
+            }
 
-        composer_text = (post_box.get("text", "") or "").lower()
-        page_name = (self._current_page_name or "").lower()
-        personal_name = (self._personal_profile_name or "").lower()
+            return { url, name, pageCount };
+        })()""")
 
-        if page_name and page_name in composer_text:
-            logger.error(
-                "IDENTITY MISMATCH: nadal aktywny profil fanpage '%s' zamiast osobistego",
-                self._current_page_name,
+        is_fanpage = False
+        detected_page_name = None
+
+        if me_check:
+            me_url = me_check.get("url", "")
+            me_name = me_check.get("name", "")
+            page_count = me_check.get("pageCount", 0)
+
+            # Signal 1: page management elements on the profile page
+            if page_count > 0:
+                is_fanpage = True
+                detected_page_name = me_name
+                logger.warning("Wykryto %d elementow zarzadzania strona na /me", page_count)
+
+            # Signal 2: /me URL contains /people/Name/ID/ with non-personal ID
+            # Personal IDs start with '100', page IDs typically don't
+            page_id_match = re.search(r'/people/[^/]+/(\d{10,})/?', me_url)
+            if page_id_match and not page_id_match.group(1).startswith('100'):
+                is_fanpage = True
+                detected_page_name = me_name
+                logger.warning("/me przekierowal do URL strony: %s", me_url)
+
+            # Signal 3: known fanpage name matches /me profile
+            if self._current_page_name and me_name and \
+               self._current_page_name.lower() in me_name.lower():
+                is_fanpage = True
+                detected_page_name = me_name
+
+        # Step 2: Also check HOME composer for additional confirmation
+        if not is_fanpage:
+            await self.tab.get("https://www.facebook.com/")
+            await HumanImitation.human_delay(3, 6)
+            await _eval_js(self.tab, "window.scrollTo(0, 0)")
+            await HumanImitation.human_delay(1, 2)
+
+            post_box = await self._find_home_composer()
+            if post_box:
+                composer_text = (post_box.get("text", "") or "").lower()
+                page_name = (self._current_page_name or "").lower()
+                personal_name = (self._personal_profile_name or "").lower()
+
+                if page_name and page_name in composer_text:
+                    is_fanpage = True
+                    detected_page_name = self._current_page_name
+                    logger.warning("Composer zawiera nazwe fanpage '%s'",
+                                   self._current_page_name)
+                elif personal_name and personal_name in composer_text:
+                    logger.info("IDENTITY OK: profil osobisty '%s' (composer)",
+                                self._personal_profile_name)
+                    self._current_page_name = None
+                    return True
+
+        # Step 3: If fanpage detected → auto-switch to personal
+        if is_fanpage:
+            if detected_page_name and not self._current_page_name:
+                self._current_page_name = detected_page_name
+            logger.warning(
+                "IDENTITY MISMATCH: aktywny profil fanpage '%s' "
+                "— przelaczam na profil osobisty",
+                detected_page_name or "unknown",
             )
+            switched = await self.switch_to_personal_profile()
+            if switched:
+                self._current_page_name = None
+                logger.info("Auto-naprawa: przywrocono profil osobisty")
+                return True
+            logger.error("Auto-naprawa nie powiodla sie — nie mozna "
+                         "przywrocic profilu osobistego")
             return False
-        elif personal_name and personal_name in composer_text:
-            logger.info("IDENTITY OK: profil osobisty '%s' (zweryfikowano na HOME)",
-                        self._personal_profile_name)
-            self._current_page_name = None
-            return True
 
-        # Generic placeholder without names — likely personal (default)
-        logger.info("IDENTITY OK: composer bez nazwy profilu — prawdopodobnie osobisty")
+        # No fanpage detected — personal is the default
+        logger.info("IDENTITY OK: profil osobisty")
         self._current_page_name = None
         return True
 
@@ -280,11 +345,29 @@ class PublishMixin:
             await mouse_engine.click_element(self.tab, activity_review["submit"])
             await HumanImitation.human_delay(2, 4)
 
-        # Scroll naturally to seem human, then back to top so composer is visible
+        # Scroll naturally to seem human, then scroll down to reveal the feed
+        # (group headers can be 600-800px, pushing composer below the fold)
         await HumanImitation.natural_scroll(self.tab, scrolls=2)
         await HumanImitation.human_delay(1, 2)
-        await _eval_js(self.tab, "window.scrollTo(0, 0)")
-        await HumanImitation.human_delay(0.5, 1.0)
+        # Scroll past the group header so the composer is centered
+        await _eval_js(self.tab, """(() => {
+            // Find tab bar (Dyskusja/Discussion) as anchor point
+            const tabs = document.querySelectorAll(
+                "a[role='tab'], div[role='tablist']"
+            );
+            for (const t of tabs) {
+                const r = t.getBoundingClientRect();
+                if (r.width > 200 && r.y > 100) {
+                    // Scroll so tab bar is near the top of viewport
+                    window.scrollTo(0, window.scrollY + r.y - 60);
+                    return true;
+                }
+            }
+            // Fallback: scroll down 400px to get past most group headers
+            window.scrollBy(0, 400);
+            return false;
+        })()""")
+        await HumanImitation.human_delay(1, 2)
 
         try:
             # Step 1: Find the composer trigger — structural match only (language-independent).
@@ -299,20 +382,74 @@ class PublishMixin:
             # Diagnostic: verify a dialog opened (not a comment box)
             dialog_check = await self.dom.find("div[role='dialog']", timeout=3.0)
             if not dialog_check:
-                logger.warning("Klikniecie composera nie otworzylo dialogu - prawdopodobnie trafiono w pole komentarza. Probuje ponownie.")
+                logger.warning("Klikniecie composera nie otworzylo dialogu - probuje FAB i retry")
                 os.makedirs(self.screenshot_dir, exist_ok=True)
                 await self.tab.save_screenshot(
                     os.path.join(self.screenshot_dir, f"no_dialog_{self.account_email}.png")
                 )
-                # Scroll to very top and retry
-                await _eval_js(self.tab, "window.scrollTo(0, 0)")
-                await HumanImitation.human_delay(1, 2)
-                post_box = await self.dom.find_group_composer(timeout=10.0)
-                if not post_box:
-                    raise TimeoutError("Nie znaleziono composera po ponownej probie")
-                logger.info("Retry: composer at y=%.0f, text='%s'", post_box.get("y", 0), post_box.get("text", "")[:50])
-                await mouse_engine.click_element(self.tab, post_box)
-                await HumanImitation.human_delay(1, 3)
+
+                # Fallback 1: FAB (floating action button) — compose icon near tab bar
+                fab = await _eval_js(self.tab, """(() => {
+                    // Strategy A: aria-label with compose/create/write keywords
+                    const composeLabels = [
+                        'napisz', 'utwórz', 'create', 'compose', 'write',
+                        'new post', 'nowy post', 'เขียน', 'สร้าง'
+                    ];
+                    const allEls = document.querySelectorAll(
+                        "div[role='button'], a[role='button'], a[role='link'], " +
+                        "button, [tabindex='0']"
+                    );
+                    for (const el of allEls) {
+                        const label = (el.getAttribute('aria-label') || '').toLowerCase();
+                        if (!label) continue;
+                        const r = el.getBoundingClientRect();
+                        if (r.width < 15 || r.height < 15 || r.y < 100) continue;
+                        if (el.closest("[role='article']")) continue;
+                        if (composeLabels.some(l => label.includes(l))) {
+                            return {x: r.x, y: r.y, w: r.width, h: r.height,
+                                    text: label.slice(0, 80), strategy: 'aria-label'};
+                        }
+                    }
+
+                    // Strategy B: small round button with SVG near bottom-right
+                    for (const el of allEls) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width < 25 || r.width > 70) continue;
+                        if (r.height < 25 || r.height > 70) continue;
+                        if (Math.abs(r.width - r.height) > 15) continue;
+                        // Right half of page, lower half
+                        const vw = window.innerWidth;
+                        const vh = window.innerHeight;
+                        if (r.x < vw * 0.6 || r.y < vh * 0.5) continue;
+                        if (el.closest("[role='article']")) continue;
+                        // Must have SVG or icon child
+                        const hasSvg = el.querySelector('svg')
+                            || el.querySelector('i')
+                            || el.querySelector('img');
+                        if (!hasSvg) continue;
+                        return {x: r.x, y: r.y, w: r.width, h: r.height,
+                                text: (el.getAttribute('aria-label') || 'FAB'),
+                                strategy: 'svg-position'};
+                    }
+                    return null;
+                })()""")
+
+                if fab:
+                    logger.info("Znaleziono FAB (compose) w prawym dolnym rogu")
+                    await mouse_engine.click_element(self.tab, fab)
+                    await HumanImitation.human_delay(2, 4)
+                    dialog_check = await self.dom.find("div[role='dialog']", timeout=3.0)
+
+                # Fallback 2: Scroll to top and retry inline composer
+                if not dialog_check:
+                    await _eval_js(self.tab, "window.scrollTo(0, 0)")
+                    await HumanImitation.human_delay(1, 2)
+                    post_box = await self.dom.find_group_composer(timeout=10.0)
+                    if post_box:
+                        logger.info("Retry: composer at y=%.0f, text='%s'",
+                                    post_box.get("y", 0), post_box.get("text", "")[:50])
+                        await mouse_engine.click_element(self.tab, post_box)
+                        await HumanImitation.human_delay(1, 3)
 
             # Step 2: Find the text editor in the post creation modal.
             editor = await self.dom.find(
