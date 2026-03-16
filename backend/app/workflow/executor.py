@@ -170,6 +170,9 @@ class WorkflowExecutor:
 
             try:
                 await self._walk_dag(ctx, topo_order, nodes_map, adjacency, completed_nodes, db, run)
+            except asyncio.CancelledError:
+                logger.info("Workflow %d run %d cancelled via task.cancel()", workflow_id, run_id)
+                run.status = "CANCELLED"
             except Exception as e:
                 logger.exception("Workflow %d run %d failed: %s", workflow_id, run_id, e)
                 run.status = "FAILED"

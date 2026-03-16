@@ -126,8 +126,10 @@ class DomWalker:
                 const ar = av.getBoundingClientRect();
                 if (ar.width < 30 || ar.width > 50) continue;
                 if (ar.height < 30 || ar.height > 50) continue;
-                // Skip avatars in the navbar area (< 100px from top)
-                if (ar.y < 100) continue;
+                // Skip avatars in the navbar area (< 100px from page top)
+                // Use absolute page position, not viewport — after scrolling
+                // the composer may be above viewport (negative ar.y) but still valid.
+                if (ar.y + window.scrollY < 100) continue;
                 // Skip avatars inside posts (comment boxes) — they sit inside role='article'
                 if (av.closest("[role='article']")) continue;
                 // Skip avatars inside forms (comment input forms)

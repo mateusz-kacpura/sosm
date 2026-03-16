@@ -10,6 +10,30 @@ logger = logging.getLogger(__name__)
 # Facebook session cookies critical for authentication state.
 _SESSION_COOKIE_NAMES = ("c_user", "xs")
 
+# Polyfill for navigator.mediaDevices — Camoufox doesn't spoof this API,
+# and its absence is a fingerprint signal (real PCs always have media devices).
+_MEDIA_DEVICES_POLYFILL = """
+if (!navigator.mediaDevices) {
+    Object.defineProperty(navigator, 'mediaDevices', {
+        value: {
+            enumerateDevices: () => Promise.resolve([
+                {deviceId: '', groupId: '', kind: 'audioinput', label: ''},
+                {deviceId: '', groupId: '', kind: 'videoinput', label: ''},
+                {deviceId: '', groupId: '', kind: 'audiooutput', label: ''},
+            ]),
+            getUserMedia: () => Promise.reject(new DOMException('Permission denied', 'NotAllowedError')),
+            getSupportedConstraints: () => ({
+                width: true, height: true, aspectRatio: true, frameRate: true,
+                facingMode: true, resizeMode: true, sampleRate: true,
+                sampleSize: true, echoCancellation: true, autoGainControl: true,
+                noiseSuppression: true, latency: true, channelCount: true,
+                deviceId: true, groupId: true,
+            }),
+        },
+        configurable: true, enumerable: true,
+    });
+}
+"""
 
 class BrowserManager:
     """Manages a browser profile lifecycle via Camoufox (Playwright/Firefox).
@@ -58,18 +82,29 @@ class BrowserManager:
             headless = False
         # else: "virtual" stays as string (Xvfb mode)
 
+        from browserforge.fingerprints import Screen
+        from camoufox.async_api import AsyncCamoufox
+
         kwargs = dict(
             persistent_context=True,
             user_data_dir=profile_dir,
             humanize=True,
             headless=headless,
+            # Constrain screen so generated resolution ≥ 1280x900 (prevents
+            # outerHeight > screen.height when the host monitor is large).
+            screen=Screen(min_width=1280, min_height=900, max_width=1920, max_height=1080),
+            # Override BrowserForge defaults that create fingerprint signals.
+            # DNT: only ~1% of real users enable it; BrowserForge sets it to 1.
+            # window size: override via explicit window param to prevent
+            # outerWidth/outerHeight exceeding spoofed screen dimensions.
+            config={"navigator.doNotTrack": "unspecified"},
+            window=(1280, 900),
         )
         if proxy:
             kwargs["proxy"] = proxy
         if settings.CAMOUFOX_BINARY:
             kwargs["executable_path"] = settings.CAMOUFOX_BINARY
 
-        from camoufox.async_api import AsyncCamoufox
         self._camoufox = AsyncCamoufox(**kwargs)
         self._context = await self._camoufox.__aenter__()
 
@@ -78,6 +113,9 @@ class BrowserManager:
             page = self._context.pages[0]
         else:
             page = await self._context.new_page()
+
+        # Inject mediaDevices polyfill before any page loads.
+        await self._context.add_init_script(_MEDIA_DEVICES_POLYFILL)
 
         reset_cursor()
 

@@ -137,9 +137,11 @@ class PublishMixin:
         await HumanImitation.human_delay(1, 2)
 
         # Step 2: Set files via Playwright (replaces 67-line CDP dance)
+        # Target the file input INSIDE the dialog — FB has multiple hidden
+        # input[type='file'] on the page; only the dialog one triggers upload.
         logger.info("Ustawiam pliki via Playwright: %s", [os.path.basename(p) for p in media_paths])
         try:
-            file_input = self.page.locator("input[type='file']").first
+            file_input = self.page.locator("div[role='dialog'] input[type='file']").first
             await file_input.set_input_files(media_paths)
         except Exception as e:
             logger.error("Playwright set_input_files failed: %s", e)

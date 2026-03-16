@@ -229,14 +229,29 @@ class TestAnalyzeFingerprintNewVectors:
         assert result["categories"]["webgl"]["status"] == "fail"
         assert any("ANGLE" in i for i in result["categories"]["webgl"]["issues"])
 
-    def test_angle_vendor_with_chrome_ua_passes(self):
-        """ANGLE vendor is normal for Chrome — should NOT fail."""
+    def test_angle_vendor_with_windows_ua_passes(self):
+        """ANGLE vendor is normal on Windows (Chrome and Firefox both use ANGLE)."""
+        data = _make_good_fingerprint()
+        data["navigator"]["userAgent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0"
+        data["webgl"]["unmaskedVendor"] = "Google Inc. (NVIDIA)"
+        result = analyze_fingerprint(data)
+        assert result["categories"]["webgl"]["status"] == "pass"
+
+    def test_angle_vendor_with_firefox_windows_passes(self):
+        """ANGLE vendor is normal for Firefox on Windows (ANGLE backend since FF 70+)."""
+        data = _make_good_fingerprint()
+        data["navigator"]["userAgent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0"
+        data["webgl"]["unmaskedVendor"] = "Google Inc. (NVIDIA)"
+        result = analyze_fingerprint(data)
+        assert result["categories"]["webgl"]["status"] == "pass"
+
+    def test_angle_vendor_with_linux_ua_fails(self):
+        """ANGLE vendor on Linux is suspicious — Linux uses Mesa/native drivers."""
         data = _make_good_fingerprint()
         data["navigator"]["userAgent"] = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0"
         data["webgl"]["unmaskedVendor"] = "Google Inc. (NVIDIA)"
         result = analyze_fingerprint(data)
-        # WebGL should pass (ANGLE is expected for Chrome)
-        assert result["categories"]["webgl"]["status"] == "pass"
+        assert result["categories"]["webgl"]["status"] == "fail"
 
     def test_high_cores_low_gpu_warns(self):
         data = _make_good_fingerprint()

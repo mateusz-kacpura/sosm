@@ -103,5 +103,20 @@ async def submit_workflow_task(
     task.add_done_callback(lambda t: _running_tasks.pop(task_key, None))
 
 
+async def cancel_workflow_task(workflow_id: int, run_id: int) -> bool:
+    """Cancel a running workflow task via asyncio.Task.cancel().
+
+    This raises CancelledError in the task, interrupting any asyncio.sleep()
+    and allowing the executor's finally block to close the browser.
+    """
+    task_key = f"workflow:{workflow_id}:{run_id}"
+    task = _running_tasks.get(task_key)
+    if task and not task.done():
+        task.cancel()
+        logger.info("Cancelled workflow task %s", task_key)
+        return True
+    return False
+
+
 def get_active_task_count() -> int:
     return len(_running_tasks)

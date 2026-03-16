@@ -272,9 +272,9 @@ def analyze_fingerprint(raw_data: dict) -> dict:
         nav_issues.append("maxTouchPoints=1 — anomalia, desktop powinien miec 0, ekrany dotykowe 5 lub 10")
         score -= 10
 
-    # deviceMemory — Chrome exposes this on real hardware (4, 8, etc.)
-    # null/undefined suggests restricted environment or missing API
-    if nav.get("deviceMemory") is None:
+    # deviceMemory — Chrome-only API (not in Firefox spec).
+    # Only flag for Chrome UAs where absence suggests restricted environment.
+    if nav.get("deviceMemory") is None and "Firefox" not in ua:
         nav_issues.append("deviceMemory niedostepne — Chrome na prawdziwym PC zwraca ilosc RAM")
         score -= 5
 
@@ -333,13 +333,18 @@ def analyze_fingerprint(raw_data: dict) -> dict:
             webgl_issues.append("Brak unmaskedRenderer — podejrzane")
             score -= 15
             webgl_status = "fail"
-        # ANGLE-style vendor ("Google Inc.") is Chrome-specific — Firefox uses native vendor
-        if "Firefox" in ua and "Google Inc" in vendor:
-            webgl_issues.append(
-                f"WebGL vendor '{vendor}' jest w formacie ANGLE/Chrome, ale UA mowi Firefox — niespojnosc"
-            )
-            score -= 15
-            webgl_status = "fail"
+        # ANGLE-style vendor ("Google Inc.") appears on both Chrome and Firefox
+        # on Windows. Firefox has used ANGLE as WebGL backend since ~Firefox 70.
+        # Only flag if the OS claims Linux/macOS (where ANGLE is not used).
+        if "Google Inc" in vendor:
+            is_linux_ua = "Linux" in ua and "Android" not in ua
+            is_mac_ua = "Macintosh" in ua
+            if is_linux_ua or is_mac_ua:
+                webgl_issues.append(
+                    f"WebGL vendor '{vendor}' jest w formacie ANGLE, ale UA wskazuje na {('Linux' if is_linux_ua else 'macOS')} — niespojnosc"
+                )
+                score -= 15
+                webgl_status = "fail"
         # Ancient GPU detection — GPUs from before ~2012 paired with modern browsers
         # create temporal anomalies that anti-fraud systems flag automatically.
         renderer_lower = renderer.lower()

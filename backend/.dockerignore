@@ -1,0 +1,5 @@
+sosm_data/
+test_screenshots/
+__pycache__/
+*.pyc
+.env

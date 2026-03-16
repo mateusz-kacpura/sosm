@@ -272,6 +272,13 @@ async def cancel_workflow_run(
 
     run.status = "CANCELLED"
     await db.commit()
+
+    # Signal the running asyncio task to stop (interrupts asyncio.sleep).
+    from app.core.config import settings
+    if settings.STANDALONE:
+        from app import task_runner
+        await task_runner.cancel_workflow_task(workflow_id, run_id)
+
     return {"status": "cancelled"}
 
 
