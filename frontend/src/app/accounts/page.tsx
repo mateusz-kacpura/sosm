@@ -37,6 +37,7 @@ export default function AccountsPage() {
   const [password, setPassword] = useState("")
   const [proxy, setProxy] = useState("")
   const [submitting, setSubmitting] = useState(false)
+  const [creatingProfileFor, setCreatingProfileFor] = useState<number | null>(null)
 
   async function fetchAccounts() {
     try {
@@ -81,6 +82,19 @@ export default function AccountsPage() {
       await fetchAccounts()
     } catch (err: any) {
       setError(err.message)
+    }
+  }
+
+  const handleCreateProfile = async (id: number) => {
+    setCreatingProfileFor(id)
+    setError(null)
+    try {
+      await api.accounts.createProfile(id)
+      await fetchAccounts()
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setCreatingProfileFor(null)
     }
   }
 
@@ -183,7 +197,23 @@ export default function AccountsPage() {
                   </TableCell>
                   <TableCell className="text-muted-foreground font-mono text-xs">{acc.proxy_url || "Brak"}</TableCell>
                   <TableCell className="text-muted-foreground font-mono text-xs" title={acc.browser_profile_id || ""}>
-                    {acc.browser_profile_id ? acc.browser_profile_id.slice(0, 8) + "..." : "Brak"}
+                    {acc.browser_profile_id ? (
+                      acc.browser_profile_id.slice(0, 8) + "..."
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs border-primary/20 hover:bg-primary/10"
+                        onClick={() => handleCreateProfile(acc.id)}
+                        disabled={creatingProfileFor === acc.id}
+                      >
+                        {creatingProfileFor === acc.id ? (
+                          <><Loader2 className="mr-1 h-3 w-3 animate-spin" /> Tworzenie...</>
+                        ) : (
+                          <><Fingerprint className="mr-1 h-3 w-3" /> Utwórz profil</>
+                        )}
+                      </Button>
+                    )}
                   </TableCell>
                   <TableCell>{acc.created_at ? new Date(acc.created_at).toLocaleDateString("pl-PL") : "-"}</TableCell>
                   <TableCell className="text-right">

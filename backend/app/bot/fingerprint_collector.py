@@ -229,12 +229,15 @@ FINGERPRINT_JS = """
 
 
 async def collect_fingerprint(page) -> dict:
-    """Navigate to about:blank and collect fingerprint data via Playwright.
+    """Navigate to a secure page and collect fingerprint data via Playwright.
+
+    Uses an HTTPS page so that secure-context APIs (navigator.mediaDevices)
+    are available — about:blank is NOT a secure context in Firefox.
 
     Camoufox natively handles mediaDevices and deviceMemory spoofing,
     so no polyfills are needed.
     """
-    await page.goto("about:blank")
+    await page.goto("https://www.example.com", wait_until="domcontentloaded")
     raw_data = await page.evaluate(f"({FINGERPRINT_JS})()")
     return raw_data
 
@@ -253,6 +256,19 @@ def analyze_fingerprint(raw_data: dict) -> dict:
         score -= 30
     if nav.get("pluginsLength", 0) == 0:
         nav_issues.append("Brak pluginow (podejrzane dla desktopowej przegladarki)")
+        score -= 10
+
+    # Plugin validation: modern browsers (Firefox 128+, Chrome 90+) all expose
+    # the same 5 PDF viewer plugins as part of fingerprint resistance.
+    # Only flag truly anomalous plugin lists.
+    plugins = nav.get("plugins", [])
+
+    # navigator.vendor: Firefox = "" (empty), Chrome = "Google Inc."
+    vendor_nav = nav.get("vendor", "")
+    if "Firefox" in ua and vendor_nav:
+        nav_issues.append(
+            f"navigator.vendor = '{vendor_nav}' ale UA jest Firefox (powinien byc pusty)"
+        )
         score -= 10
     if not nav.get("languages") or len(nav.get("languages", [])) == 0:
         nav_issues.append("Brak ustawionych jezykow")
@@ -345,6 +361,18 @@ def analyze_fingerprint(raw_data: dict) -> dict:
                 )
                 score -= 15
                 webgl_status = "fail"
+        # ", or similar" suffix — artifact of BrowserForge's spoofing database.
+        # Real GPUs never report this suffix; its presence reveals fingerprint
+        # spoofing to anti-bot systems.
+        if ", or similar" in renderer:
+            webgl_issues.append(
+                f"WebGL renderer zawiera ', or similar' — artefakt biblioteki spoofujacej, "
+                f"prawdziwe GPU nigdy nie raportuja tego sufiksu"
+            )
+            score -= 10
+            if webgl_status == "pass":
+                webgl_status = "warn"
+
         # Ancient GPU detection — GPUs from before ~2012 paired with modern browsers
         # create temporal anomalies that anti-fraud systems flag automatically.
         renderer_lower = renderer.lower()
@@ -435,12 +463,31 @@ def analyze_fingerprint(raw_data: dict) -> dict:
     # --- Fonts ---
     fonts = raw_data.get("fonts", {})
     fonts_issues = []
+    fonts_status = "pass"
     if fonts.get("count", 0) == 0:
         fonts_issues.append("Brak wykrytych czcionek — mozliwy blad w srodowisku renderowania")
         score -= 10
+        fonts_status = "warn"
+
+    # Font-platform consistency: Windows-only fonts on Linux = critical anomaly
+    detected_fonts = fonts.get("detected", [])
+    _WINDOWS_ONLY_FONTS = {
+        "Segoe UI", "Calibri", "Cambria", "Consolas", "Candara",
+        "Constantia", "Corbel", "Microsoft Sans Serif", "Sylfaen",
+    }
+    is_linux_ua = "Linux" in ua and "Android" not in ua
+    if is_linux_ua and detected_fonts:
+        win_fonts = [f for f in detected_fonts if f in _WINDOWS_ONLY_FONTS]
+        if win_fonts:
+            fonts_issues.append(
+                f"Fonty Windows wykryte na platformie Linux: {', '.join(win_fonts)} "
+                f"— krytyczna anomalia (te fonty nie istnieja na Linux)"
+            )
+            score -= 15
+            fonts_status = "fail"
 
     categories["fonts"] = {
-        "status": "warn" if fonts_issues else "pass",
+        "status": fonts_status,
         "issues": fonts_issues,
         "data": fonts,
     }

@@ -156,21 +156,48 @@ class DonutClient:
         except (httpx.ConnectError, httpx.ReadTimeout, OSError):
             return False
 
-    async def create_profile(self, name: str) -> str:
+    async def create_profile(
+        self,
+        name: str,
+        browser: str = "camoufox",
+        version: str | None = None,
+        os_spoof: str | None = None,
+    ) -> str:
         """Create a new Donut Browser profile with a unique fingerprint.
+
+        Args:
+            name: Profile display name.
+            browser: Browser engine — "camoufox" or "wayfern".
+            version: Browser version string. If None, auto-detects from
+                Donut's downloaded browsers.
+            os_spoof: OS to emulate — "windows", "macos", "linux", or None.
 
         Returns:
             The UUID of the newly created profile.
         """
+        if not version:
+            version = await self.get_installed_browser_version(browser)
+
+        payload: dict = {
+            "name": name,
+            "browser": browser,
+            "version": version,
+        }
+
+        if browser == "camoufox":
+            camou_config: dict = {
+                "geoip": True,
+                "block_webrtc": True,
+            }
+            if os_spoof:
+                camou_config["os"] = os_spoof
+            payload["camoufox_config"] = camou_config
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{self.api_url}/v1/profiles",
                 headers=self._headers(),
-                json={
-                    "name": name,
-                    "browser": "wayfern",
-                    "version": "145.0.7632.116",
-                },
+                json=payload,
             )
 
         if resp.status_code >= 400:
@@ -180,8 +207,36 @@ class DonutClient:
 
         data = resp.json()
         profile_id = data["profile"]["id"]
-        logger.info("Donut profile created: %s (name=%s)", profile_id, name)
+        logger.info("Donut %s profile created: %s (name=%s)", browser, profile_id, name)
         return profile_id
+
+    async def get_installed_browser_version(self, browser: str = "camoufox") -> str:
+        """Get the installed version of a browser engine from Donut.
+
+        Reads downloaded_browsers.json to find installed versions.
+
+        Raises:
+            DonutBrowserError: If no version of the browser is installed.
+        """
+        import json
+        import os
+
+        # Try to find from Donut data dir on disk
+        from app.bot.donut_auto_config import _donut_data_dir
+        data_dir = _donut_data_dir()
+        db_file = os.path.join(data_dir, "data", "downloaded_browsers.json")
+
+        if os.path.isfile(db_file):
+            with open(db_file) as f:
+                db = json.load(f)
+            versions = db.get("browsers", {}).get(browser, {})
+            if versions:
+                return sorted(versions.keys())[-1]
+
+        raise DonutBrowserError(
+            f"No {browser} browser installed in Donut Browser. "
+            f"Download it from Donut Browser settings first."
+        )
 
     async def delete_profile(self, profile_id: str) -> None:
         """Delete a Donut Browser profile and its data permanently."""
@@ -198,6 +253,25 @@ class DonutClient:
             )
         else:
             logger.info("Donut profile %s deleted", profile_id)
+
+    async def get_profile(self, profile_id: str) -> dict:
+        """Get full profile data including camoufox_config.
+
+        Returns:
+            Dict with profile fields (BrowserProfile structure).
+        """
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{self.api_url}/v1/profiles/{profile_id}",
+                headers=self._headers(),
+            )
+
+        if resp.status_code >= 400:
+            raise DonutBrowserError(
+                f"Failed to get profile {profile_id}: HTTP {resp.status_code} {resp.text}"
+            )
+        data = resp.json()
+        return data.get("profile", data)
 
     async def stop_profile(self, profile_id: str) -> None:
         """Stop (kill) a Donut Browser profile.

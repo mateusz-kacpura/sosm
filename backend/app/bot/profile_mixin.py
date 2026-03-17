@@ -126,12 +126,18 @@ class ProfileMixin:
 
         if not page_name:
             logger.error("Nie udalo sie pobrac nazwy fanpage")
+            os.makedirs(self.screenshot_dir, exist_ok=True)
+            await self.page.screenshot(path=
+                os.path.join(self.screenshot_dir, f"fanpage_no_name_{self.account_email}.png"))
             return False
         self._current_page_name = page_name
         logger.info("Nazwa fanpage: '%s'", page_name)
 
         # Open the avatar dropdown menu
         if not await self._click_profile_avatar():
+            os.makedirs(self.screenshot_dir, exist_ok=True)
+            await self.page.screenshot(path=
+                os.path.join(self.screenshot_dir, f"fanpage_avatar_fail_{self.account_email}.png"))
             return False
 
         # Look for the fanpage entry in the profile switcher.
@@ -259,6 +265,9 @@ class ProfileMixin:
 
         # Close any open menu
         logger.warning("Nie znaleziono profilu fanpage '%s' w menu", page_name)
+        os.makedirs(self.screenshot_dir, exist_ok=True)
+        await self.page.screenshot(path=
+            os.path.join(self.screenshot_dir, f"fanpage_not_in_menu_{self.account_email}.png"))
         await self.page.keyboard.press("Escape")
         return False
 

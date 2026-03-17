@@ -1,11 +1,11 @@
-"""Mouse movement engine — thin adapter over Camoufox's built-in humanization.
+"""Mouse movement engine using Playwright's mouse API.
 
-Camoufox ``humanize=True`` implements human-like cursor movement at the C++
-level (Bézier curves, overshoot, micro-corrections, Fitts' Law timing).
-This module provides a simple public API and delegates the heavy lifting
-to Camoufox/Playwright.
+When AsyncCamoufox is launched with ``humanize=True``, cursor movements
+are automatically enhanced with human-like trajectories (Bézier curves,
+overshoot, micro-corrections, Fitts' Law timing).
 
-Uses Playwright's ``page.mouse.*`` methods.
+This module provides a simple public API on top of Playwright's
+``page.mouse.*`` methods.
 """
 
 import asyncio

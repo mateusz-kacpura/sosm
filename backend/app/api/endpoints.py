@@ -47,6 +47,50 @@ async def delete_account(account_id: int, db: AsyncSession = Depends(get_db)):
     return {"detail": "Account deleted"}
 
 
+@router.post("/accounts/{account_id}/create-profile")
+async def create_browser_profile(account_id: int, db: AsyncSession = Depends(get_db)):
+    """Create a Camoufox browser profile in Donut Browser and link it to this account."""
+    from app.bot.donut_client import DonutClient, DonutBrowserError
+    from app.bot.donut_auto_config import auto_configure
+    from app.core.config import settings
+
+    result = await db.execute(select(Account).where(Account.id == account_id))
+    db_account = result.scalars().first()
+    if not db_account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if db_account.browser_profile_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Account already has a profile: {db_account.browser_profile_id}",
+        )
+
+    api_token = settings.DONUT_API_TOKEN
+    if not api_token:
+        api_token = auto_configure() or ""
+
+    client = DonutClient(api_url=settings.DONUT_API_URL, api_token=api_token)
+
+    try:
+        profile_name = f"SOSM-{db_account.fb_email}"
+        profile_id = await client.create_profile(
+            name=profile_name,
+            browser="camoufox",
+        )
+    except DonutBrowserError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    db_account.browser_profile_id = profile_id
+    await db.commit()
+    await db.refresh(db_account)
+
+    return {
+        "detail": "Profile created",
+        "profile_id": profile_id,
+        "account_id": account_id,
+    }
+
+
 def _compute_interval(posts_per_day: int, hours_start: str, hours_end: str) -> int:
     """Compute base_interval_minutes from posts_per_day and active window."""
     sh, sm = int(hours_start[:2]), int(hours_start[3:5])

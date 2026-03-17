@@ -64,7 +64,7 @@ def _make_good_fingerprint():
             "mediaDevicesExists": True,
         },
         "fonts": {
-            "detected": ["Arial", "Verdana", "Times New Roman", "Courier New", "Georgia"],
+            "detected": ["Liberation Sans", "DejaVu Sans", "Noto Sans", "Ubuntu", "FreeSans"],
             "count": 5,
         },
         "automation": {
@@ -325,3 +325,58 @@ class TestAnalyzeFingerprintScoreBounds:
         data = _make_good_fingerprint()
         result = analyze_fingerprint(data)
         assert result["overall_score"] <= 100
+
+
+class TestAnalyzeFingerprintFontConsistency:
+    def test_windows_fonts_on_linux_fails(self):
+        """Windows-only fonts (Segoe UI, Calibri, etc.) on Linux = critical anomaly."""
+        data = _make_good_fingerprint()
+        data["fonts"] = {
+            "detected": ["Segoe UI", "Calibri", "Liberation Sans", "DejaVu Sans"],
+            "count": 4,
+        }
+        result = analyze_fingerprint(data)
+        assert result["categories"]["fonts"]["status"] == "fail"
+        assert any("Segoe UI" in i for i in result["categories"]["fonts"]["issues"])
+
+    def test_linux_fonts_on_linux_passes(self):
+        """Linux-native fonts on Linux platform should pass."""
+        data = _make_good_fingerprint()
+        data["fonts"] = {
+            "detected": ["Liberation Sans", "DejaVu Sans", "Noto Sans", "Ubuntu"],
+            "count": 4,
+        }
+        result = analyze_fingerprint(data)
+        assert result["categories"]["fonts"]["status"] == "pass"
+
+    def test_windows_fonts_on_windows_passes(self):
+        """Windows fonts on Windows UA are normal — no penalty."""
+        data = _make_good_fingerprint()
+        data["navigator"]["userAgent"] = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) "
+            "Gecko/20100101 Firefox/135.0"
+        )
+        data["navigator"]["platform"] = "Win32"
+        data["fonts"] = {
+            "detected": ["Segoe UI", "Calibri", "Arial", "Verdana"],
+            "count": 4,
+        }
+        result = analyze_fingerprint(data)
+        # No font-platform mismatch on Windows
+        assert not any("Fonty Windows" in i for i in result["categories"]["fonts"]["issues"])
+
+
+class TestAnalyzeFingerprintWebGLOrSimilar:
+    def test_or_similar_suffix_warns(self):
+        """', or similar' suffix in WebGL renderer = spoofing library artifact."""
+        data = _make_good_fingerprint()
+        data["webgl"]["unmaskedRenderer"] = "NVIDIA GeForce GTX 980, or similar"
+        result = analyze_fingerprint(data)
+        assert any("or similar" in i for i in result["categories"]["webgl"]["issues"])
+
+    def test_clean_renderer_passes(self):
+        """Real GPU renderer without spoofing suffix should pass."""
+        data = _make_good_fingerprint()
+        data["webgl"]["unmaskedRenderer"] = "NVIDIA GeForce RTX 4050 Laptop GPU/PCIe/SSE2"
+        result = analyze_fingerprint(data)
+        assert not any("or similar" in i for i in result["categories"]["webgl"]["issues"])

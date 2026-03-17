@@ -65,11 +65,18 @@ async def run_bot_task(account_id: int, account_email: str, account_pass: str,
                        campaign_name: str = "",
                        backup_cookies: dict = None,
                        background_style: str = None):
-    """Async function: starts Camoufox browser, performs login + publish.
+    """Async: start browser (Camoufox via Donut profile), login + publish.
     Used by both Celery and standalone task runner."""
     async with AsyncSessionLocal() as db:
         try:
-            manager = BrowserManager(account_id)
+            # Lookup Donut Browser profile ID from account
+            result = await db.execute(
+                select(Account).where(Account.id == account_id)
+            )
+            account = result.scalars().first()
+            donut_profile_id = account.browser_profile_id if account else None
+
+            manager = BrowserManager(account_id, donut_profile_id=donut_profile_id)
             page = await manager.start(backup_cookies=backup_cookies)
 
             try:
@@ -130,7 +137,7 @@ async def run_bot_task(account_id: int, account_email: str, account_pass: str,
 
 async def run_fingerprint_collection(test_id: int, account_id: int = None,
                                       visit_external_sites: bool = False):
-    """Async: start Camoufox browser, collect fingerprint, analyze, store results."""
+    """Async: start browser, collect fingerprint, analyze, store results."""
     import os
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -144,10 +151,25 @@ async def run_fingerprint_collection(test_id: int, account_id: int = None,
         await db.commit()
 
         # Use provided account_id or fallback to a default fingerprint account
-        fp_account_id = account_id or settings.FINGERPRINT_ACCOUNT_ID
+        fp_account_id = account_id or settings.FINGERPRINT_ACCOUNT_ID or None
+
+        # Fallback: use the only account if exactly one exists
+        if not fp_account_id:
+            all_accounts = (await db.execute(select(Account))).scalars().all()
+            if len(all_accounts) == 1:
+                fp_account_id = all_accounts[0].id
+
+        # Lookup Donut Browser profile ID from account
+        donut_profile_id = None
+        if fp_account_id:
+            acct_result = await db.execute(
+                select(Account).where(Account.id == fp_account_id)
+            )
+            acct = acct_result.scalars().first()
+            donut_profile_id = acct.browser_profile_id if acct else None
 
         try:
-            manager = BrowserManager(fp_account_id)
+            manager = BrowserManager(fp_account_id, donut_profile_id=donut_profile_id)
             page = await manager.start()
 
             try:
@@ -219,7 +241,7 @@ if not settings.STANDALONE:
                           campaign_name: str = "",
                           backup_cookies: dict = None,
                           background_style: str = None):
-        """Sync Celery entry point — delegates to async Camoufox code."""
+        """Sync Celery entry point — delegates to async browser code."""
         lock_key = f"sosm:account_lock:{account_id}"
         lock = _redis_client.lock(lock_key, timeout=_PROFILE_LOCK_TTL, blocking_timeout=120)
         if not lock.acquire(blocking=True):

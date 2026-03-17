@@ -28,16 +28,9 @@ class Settings(BaseSettings):
     BROWSER_CONCURRENCY: int = 10
     MEDIA_UPLOAD_DIR: str = ""
 
-    # Camoufox browser automation
-    CAMOUFOX_PROFILES_DIR: str = ""   # default: {DATA_DIR}/camoufox_profiles
-    CAMOUFOX_BINARY: str = ""         # optional path override
+    # Donut Browser data directory (profiles, binaries)
+    DONUT_DATA_DIR: str = ""  # default: ~/.local/share/DonutBrowser
     CAMOUFOX_HEADLESS: str = "virtual"  # "virtual" (Xvfb), "true", "false"
-
-    @property
-    def CAMOUFOX_DIR(self) -> str:
-        if self.CAMOUFOX_PROFILES_DIR:
-            return self.CAMOUFOX_PROFILES_DIR
-        return os.path.join(self.DATA_DIR, "camoufox_profiles")
 
     @property
     def MEDIA_DIR(self) -> str:

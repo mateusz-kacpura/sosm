@@ -147,7 +147,10 @@ class WorkflowExecutor:
             fb_actions = None
 
             if account:
-                browser_manager = BrowserManager(account.id)
+                browser_manager = BrowserManager(
+                    account.id,
+                    donut_profile_id=account.browser_profile_id,
+                )
                 try:
                     backup_cookies = account.session_cookies_backup or None
                     page = await browser_manager.start(backup_cookies=backup_cookies)
@@ -241,14 +244,15 @@ class WorkflowExecutor:
             if node_id in skipped_nodes:
                 await self._record_node_execution(
                     db, ctx.run_id, node_id,
-                    nodes_map[node_id].get("type", "unknown"),
+                    nodes_map[node_id].get("data", {}).get("type") or nodes_map[node_id].get("type", "unknown"),
                     "SKIPPED",
                 )
                 continue
 
             node_info = nodes_map[node_id]
-            node_type = node_info.get("type", "unknown")
-            config = node_info.get("data", {}).get("config", {})
+            node_data = node_info.get("data", {})
+            node_type = node_data.get("type") or node_info.get("type", "unknown")
+            config = node_data.get("config", {})
 
             ctx.current_node_id = node_id
 
@@ -347,7 +351,8 @@ class WorkflowExecutor:
         if not graph_data:
             return None
         for node in graph_data.get("nodes", []):
-            if node.get("type") == "login":
+            node_type = node.get("data", {}).get("type") or node.get("type")
+            if node_type == "login":
                 account_id = node.get("data", {}).get("config", {}).get("account_id")
                 if account_id:
                     return int(account_id)

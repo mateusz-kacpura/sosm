@@ -73,6 +73,7 @@ export const api = {
     list: () => fetchApi("/accounts/"),
     create: (data: any) => fetchApi("/accounts/", { method: "POST", body: JSON.stringify(data) }),
     delete: (id: number) => fetchApi(`/accounts/${id}`, { method: "DELETE" }),
+    createProfile: (id: number) => fetchApi(`/accounts/${id}/create-profile`, { method: "POST" }),
   },
   campaigns: {
     list: () => fetchApi("/campaigns/"),
