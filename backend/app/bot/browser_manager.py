@@ -230,6 +230,12 @@ def _build_real_config(browserforge_config: dict) -> dict:
     config["mediaDevices:micros"] = 1
     config["mediaDevices:speakers"] = 1
 
+    # === HTTP headers ===
+    # Camoufox v146 advertises zstd in Accept-Encoding but Juggler's
+    # convertString() has no zstd converter — pages show raw binary.
+    # MaskConfig overrides Accept-Encoding at C++ level (nsHttpHandler).
+    config["headers.Accept-Encoding"] = "gzip, deflate, br"
+
     logger.debug(
         "Built real-system config: %d keys (kept %d from BrowserForge, "
         "set %d Linux fonts, webGl blockIfNotDefined=True)",

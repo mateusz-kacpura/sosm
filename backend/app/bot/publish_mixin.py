@@ -480,6 +480,18 @@ class PublishMixin:
                 raise TimeoutError("Nie znaleziono pola do tworzenia postu (composer)")
 
             logger.info("Znaleziono composer: '%s' at y=%.0f", post_box.get("text", "")[:50], post_box.get("y", 0))
+
+            # Scroll composer into viewport if it's outside visible area
+            comp_y = post_box.get("y", 0)
+            if comp_y < 0 or comp_y > 800:
+                scroll_by = comp_y - 200  # position composer ~200px from top
+                await _eval_js(self.page, f"window.scrollBy(0, {scroll_by})")
+                await HumanImitation.human_delay(0.5, 1)
+                # Re-find after scroll (coordinates changed)
+                post_box = await self.dom.find_group_composer(timeout=5.0)
+                if post_box:
+                    logger.info("Composer po scroll: y=%.0f", post_box.get("y", 0))
+
             await mouse_engine.click_element(self.page, post_box)
             await HumanImitation.human_delay(1, 3)
 

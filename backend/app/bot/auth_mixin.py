@@ -4,6 +4,7 @@ import os
 from .human_imitation import HumanImitation
 from .checkpoint_detector import CheckpointDetector
 from . import mouse_engine
+from . import captcha_solver
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +19,19 @@ class AuthMixin:
         await self.page.goto("https://www.facebook.com/")
         await HumanImitation.human_delay(2, 5)
 
+        # Dismiss cookie consent banner FIRST — it can overlay the login form
+        # and prevent input[name='email'] from being found.
+        accept_btn = await self.dom.find(
+            "button[data-cookiebanner='accept_button']", timeout=3.0
+        )
+        if accept_btn:
+            logger.info("Zamykam baner cookies")
+            await mouse_engine.click_element(self.page, accept_btn)
+            await HumanImitation.human_delay(1, 2)
+
         # Check if already logged in via cookies.
         # The login form (input[name='email']) only exists when NOT logged in.
-        login_form = await self.dom.find("input[name='email']", timeout=3.0)
+        login_form = await self.dom.find("input[name='email']", timeout=5.0)
         if not login_form:
             # Could be: (a) fully logged in, or (b) "Who is this?" account picker
             # The account picker has no nav bar and shows a big "Continue" button.
@@ -29,20 +40,27 @@ class AuthMixin:
                 logger.info("Sesja juz aktywna - omijamy ekran logowania.")
                 return True
 
-            # No login form AND no nav bar -> likely the account picker screen.
-            # Click the primary (blue) "Continue" button to proceed as saved user.
-            logger.info("Wykryto ekran wyboru konta (account picker) — klikam Kontynuuj")
-            if not await self._handle_account_picker(password):
-                return False
-            return True
+            # No login form AND no nav bar -> wait for SPA to hydrate
+            logger.info("Brak formularza i paska — czekam na pelny render strony...")
+            await HumanImitation.human_delay(5, 8)
 
-        # Accept cookie banner
-        accept_btn = await self.dom.find("button[data-cookiebanner='accept_button']", timeout=3.0)
-        if accept_btn:
-            await mouse_engine.click_element(self.page, accept_btn)
-            await HumanImitation.human_delay()
-            # Re-find email field after accepting cookies (DOM may have changed)
-            login_form = await self.dom.find("input[name='email']", timeout=5.0)
+            # Re-check after longer wait
+            login_form_retry = await self.dom.find("input[name='email']", timeout=5.0)
+            if login_form_retry:
+                logger.info("Formularz logowania znaleziony po dluższym oczekiwaniu")
+                login_form = login_form_retry
+                # Fall through to the email entry below
+            else:
+                nav_bar_retry = await self.dom.find("div[role='banner']", timeout=3.0)
+                if nav_bar_retry:
+                    logger.info("Sesja aktywna (wykryta po dluższym oczekiwaniu)")
+                    return True
+
+                # Likely the account picker screen.
+                logger.info("Wykryto ekran wyboru konta (account picker) — klikam Kontynuuj")
+                if not await self._handle_account_picker(password):
+                    return False
+                return True
 
         # Enter email
         logger.info("Wprowadzanie poswiadczen...")
@@ -56,6 +74,10 @@ class AuthMixin:
         if pass_field:
             await mouse_engine.click_element(self.page, pass_field)
             await HumanImitation.type_like_human(self.page, password)
+
+        # Hook reCAPTCHA v3 Enterprise before login submission
+        if await captcha_solver.hook_recaptcha_before_login(self.page):
+            logger.info("reCAPTCHA v3 Enterprise solved and hooked before login")
 
         # Click login button.
         login_btn = await self.dom.find_login_button(timeout=5.0)
@@ -72,10 +94,27 @@ class AuthMixin:
 
         await HumanImitation.human_delay(4, 7)
 
-        # Check for checkpoint/block
-        if await CheckpointDetector.handle_checkpoint_if_needed(self.page, self.screenshot_dir, self.account_email):
-            logger.error("Logowanie zablokowane - Checkpoint!")
-            return False
+        # Check for checkpoint/block — try CAPTCHA solving before giving up
+        if await CheckpointDetector.is_checkpoint_active(self.page):
+            logger.warning("Checkpoint detected after login — attempting CAPTCHA solve...")
+            if await captcha_solver.solve_captcha_on_checkpoint(self.page):
+                logger.info("CAPTCHA solved on checkpoint — waiting for redirect...")
+                await HumanImitation.human_delay(5, 8)
+                # Re-check if checkpoint is still active
+                if not await CheckpointDetector.is_checkpoint_active(self.page):
+                    logger.info("Checkpoint cleared after CAPTCHA solve")
+                else:
+                    logger.error("Checkpoint still active after CAPTCHA solve")
+                    await CheckpointDetector.handle_checkpoint_if_needed(
+                        self.page, self.screenshot_dir, self.account_email
+                    )
+                    return False
+            else:
+                logger.error("Logowanie zablokowane - Checkpoint (CAPTCHA solve failed)")
+                await CheckpointDetector.handle_checkpoint_if_needed(
+                    self.page, self.screenshot_dir, self.account_email
+                )
+                return False
 
         # Verify login succeeded — login form should be gone
         still_login = await self.dom.find("input[name='email']", timeout=2.0)
@@ -167,12 +206,24 @@ class AuthMixin:
 
         await HumanImitation.human_delay(4, 7)
 
-        # Check for checkpoint
-        if await CheckpointDetector.handle_checkpoint_if_needed(
-            self.page, self.screenshot_dir, self.account_email
-        ):
-            logger.error("Logowanie zablokowane - Checkpoint!")
-            return False
+        # Check for checkpoint — try CAPTCHA solving
+        if await CheckpointDetector.is_checkpoint_active(self.page):
+            logger.warning("Checkpoint after account picker — attempting CAPTCHA solve...")
+            if await captcha_solver.solve_captcha_on_checkpoint(self.page):
+                logger.info("CAPTCHA solved on checkpoint — waiting for redirect...")
+                await HumanImitation.human_delay(5, 8)
+                if await CheckpointDetector.is_checkpoint_active(self.page):
+                    logger.error("Checkpoint still active after CAPTCHA solve (account picker)")
+                    await CheckpointDetector.handle_checkpoint_if_needed(
+                        self.page, self.screenshot_dir, self.account_email
+                    )
+                    return False
+            else:
+                logger.error("Logowanie zablokowane - Checkpoint (account picker, CAPTCHA unsolvable)")
+                await CheckpointDetector.handle_checkpoint_if_needed(
+                    self.page, self.screenshot_dir, self.account_email
+                )
+                return False
 
         # Verify login
         nav_bar = await self.dom.find("div[role='banner']", timeout=5.0)
@@ -256,12 +307,24 @@ class AuthMixin:
 
         await HumanImitation.human_delay(4, 7)
 
-        # Verify login
-        if await CheckpointDetector.handle_checkpoint_if_needed(
-            self.page, self.screenshot_dir, self.account_email
-        ):
-            logger.error("Logowanie przez modal zablokowane - Checkpoint!")
-            return False
+        # Check for checkpoint — try CAPTCHA solving
+        if await CheckpointDetector.is_checkpoint_active(self.page):
+            logger.warning("Checkpoint after modal login — attempting CAPTCHA solve...")
+            if await captcha_solver.solve_captcha_on_checkpoint(self.page):
+                logger.info("CAPTCHA solved on checkpoint (modal) — waiting...")
+                await HumanImitation.human_delay(5, 8)
+                if await CheckpointDetector.is_checkpoint_active(self.page):
+                    logger.error("Checkpoint still active after CAPTCHA solve (modal)")
+                    await CheckpointDetector.handle_checkpoint_if_needed(
+                        self.page, self.screenshot_dir, self.account_email
+                    )
+                    return False
+            else:
+                logger.error("Logowanie przez modal zablokowane - Checkpoint!")
+                await CheckpointDetector.handle_checkpoint_if_needed(
+                    self.page, self.screenshot_dir, self.account_email
+                )
+                return False
 
         nav_bar = await self.dom.find("div[role='banner']", timeout=5.0)
         if nav_bar:

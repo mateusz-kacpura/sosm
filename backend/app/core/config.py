@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     DONUT_DATA_DIR: str = ""  # default: ~/.local/share/DonutBrowser
     CAMOUFOX_HEADLESS: str = "virtual"  # "virtual" (Xvfb), "true", "false"
 
+    # CapMonster Cloud API key for CAPTCHA solving
+    CAPMONSTER_API_KEY: str = ""
+
     @property
     def MEDIA_DIR(self) -> str:
         if self.MEDIA_UPLOAD_DIR:
