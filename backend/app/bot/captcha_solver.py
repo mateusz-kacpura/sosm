@@ -337,9 +337,10 @@ async def solve_captcha_on_checkpoint(page) -> bool:
     if not injected:
         return False
 
-    # Try to submit the checkpoint form
-    submitted = await page.evaluate("""(() => {
-        // Look for a submit/continue button on the checkpoint page
+    # Find the submit button and click it via mouse_engine (human-like)
+    from . import mouse_engine
+
+    submit_btn = await page.evaluate("""(() => {
         const buttons = document.querySelectorAll(
             'button[type="submit"], input[type="submit"], '
             + 'div[role="button"], a[role="button"]'
@@ -350,11 +351,21 @@ async def solve_captcha_on_checkpoint(page) -> bool:
                 || text.includes('submit') || text.includes('wyślij')
                 || text.includes('dalej') || text.includes('verify')
                 || text.includes('weryfikuj')) {
-                btn.click();
-                return true;
+                const r = btn.getBoundingClientRect();
+                return {x: r.x, y: r.y, w: r.width, h: r.height,
+                        text: (btn.innerText || '').trim().slice(0, 50)};
             }
         }
-        // Fallback: submit the first form with a recaptcha response
+        return null;
+    })()""")
+
+    if submit_btn:
+        logger.info("Clicking checkpoint submit: '%s'", submit_btn.get("text", ""))
+        await mouse_engine.click_element(page, submit_btn)
+        return True
+
+    # Fallback: submit form via JS (no visible button found)
+    fallback = await page.evaluate("""(() => {
         const form = document.querySelector(
             'form:has(textarea[name="g-recaptcha-response"])'
         );
@@ -362,9 +373,9 @@ async def solve_captcha_on_checkpoint(page) -> bool:
         return false;
     })()""")
 
-    if submitted:
-        logger.info("Checkpoint form submitted after CAPTCHA solve")
+    if fallback:
+        logger.info("Checkpoint form submitted via JS fallback")
     else:
         logger.warning("Could not find submit button on checkpoint page")
 
-    return submitted
+    return fallback
