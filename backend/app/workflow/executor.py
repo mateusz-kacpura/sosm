@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
@@ -60,6 +61,12 @@ class WorkflowExecutor:
         resume: bool = False,
     ):
         """Execute or resume a workflow run."""
+        run_t0 = time.monotonic()
+        logger.info(
+            "=== Workflow %d run %d %s ===",
+            workflow_id, run_id, "RESUME" if resume else "START",
+        )
+
         async with async_session_factory() as db:
             # Load workflow and run
             wf = await db.get(Workflow, workflow_id)
@@ -88,6 +95,11 @@ class WorkflowExecutor:
                     logger.info("Auto-selected sole account id=%d", account_id)
             if account_id:
                 account = await db.get(Account, account_id)
+            if account:
+                logger.info("Account: id=%d email=%s profile=%s",
+                            account.id, account.fb_email, account.browser_profile_id)
+            else:
+                logger.warning("No account resolved — Facebook nodes will fail")
 
             # Use graph snapshot from run (immutable)
             graph_data = run.graph_snapshot or wf.graph_data
@@ -107,7 +119,16 @@ class WorkflowExecutor:
                 run.status = "FAILED"
                 run.error_message = str(e)
                 await db.commit()
+                logger.error("Topological sort failed: %s", e)
                 return
+
+            # Log execution plan
+            plan = []
+            for nid in topo_order:
+                nd = nodes_map[nid].get("data", {})
+                ntype = nd.get("type") or nodes_map[nid].get("type", "?")
+                plan.append(ntype)
+            logger.info("Execution plan (%d nodes): %s", len(plan), " → ".join(plan))
 
             # Mark run as RUNNING
             run.status = "RUNNING"
@@ -147,19 +168,23 @@ class WorkflowExecutor:
             fb_actions = None
 
             if account:
+                logger.info("Starting browser for account %d...", account.id)
                 browser_manager = BrowserManager(
                     account.id,
                     donut_profile_id=account.browser_profile_id,
                 )
                 try:
                     backup_cookies = account.session_cookies_backup or None
+                    browser_t0 = time.monotonic()
                     page = await browser_manager.start(backup_cookies=backup_cookies)
                     fb_actions = FBActions(page, account.fb_email)
+                    logger.info("Browser started in %.1fs", time.monotonic() - browser_t0)
                 except Exception as e:
                     run.status = "FAILED"
                     run.error_message = f"Browser start failed: {e}"
                     run.completed_at = datetime.now(timezone.utc)
                     await db.commit()
+                    logger.error("Browser start failed: %s", e)
                     return
 
             ctx = ExecutionContext(
@@ -187,13 +212,15 @@ class WorkflowExecutor:
                         cookies = await browser_manager.extract_session_cookies(page)
                         if cookies:
                             account.session_cookies_backup = cookies
-                    except Exception:
-                        pass
+                            logger.info("Session cookies saved (%d cookies)", len(cookies))
+                    except Exception as e:
+                        logger.warning("Failed to save session cookies: %s", e)
 
                 # Stop browser
                 if browser_manager:
                     try:
                         await browser_manager.stop()
+                        logger.info("Browser stopped")
                     except Exception as e:
                         logger.warning("Error stopping browser: %s", e)
 
@@ -203,6 +230,12 @@ class WorkflowExecutor:
                 run.completed_at = datetime.now(timezone.utc)
                 run.variables = ctx.variables
                 await db.commit()
+
+                elapsed = time.monotonic() - run_t0
+                logger.info(
+                    "=== Workflow %d run %d %s (%.1fs) ===",
+                    workflow_id, run_id, run.status, elapsed,
+                )
 
     async def _walk_dag(
         self,
@@ -239,13 +272,17 @@ class WorkflowExecutor:
                 ne = result.scalar_one_or_none()
                 if ne and ne.output_data:
                     ctx.node_outputs[node_id] = ne.output_data
+                nd = nodes_map[node_id].get("data", {})
+                ntype = nd.get("type") or nodes_map[node_id].get("type", "?")
+                logger.info("  [%s] SKIP (already completed on resume)", ntype)
                 continue
 
             if node_id in skipped_nodes:
+                nd = nodes_map[node_id].get("data", {})
+                ntype = nd.get("type") or nodes_map[node_id].get("type", "unknown")
+                logger.info("  [%s] SKIP (branch not taken)", ntype)
                 await self._record_node_execution(
-                    db, ctx.run_id, node_id,
-                    nodes_map[node_id].get("data", {}).get("type") or nodes_map[node_id].get("type", "unknown"),
-                    "SKIPPED",
+                    db, ctx.run_id, node_id, ntype, "SKIPPED",
                 )
                 continue
 
@@ -263,16 +300,23 @@ class WorkflowExecutor:
                 input_data=config,
             )
 
+            logger.info("  [%s] START", node_type)
+            node_t0 = time.monotonic()
+
             try:
                 output = await node_impl.execute_with_retry(ctx, config)
                 ne.status = "COMPLETED"
                 ne.output_data = output
                 ne.completed_at = datetime.now(timezone.utc)
                 ctx.node_outputs[node_id] = output
+                node_dt = time.monotonic() - node_t0
+                logger.info("  [%s] COMPLETED (%.1fs) → %s", node_type, node_dt, _summarize_output(output))
             except (NodeExecutionError, Exception) as e:
                 ne.status = "FAILED"
                 ne.error_message = str(e)[:1000]
                 ne.completed_at = datetime.now(timezone.utc)
+                node_dt = time.monotonic() - node_t0
+                logger.error("  [%s] FAILED (%.1fs): %s", node_type, node_dt, e)
                 await db.commit()
                 raise
 
@@ -420,3 +464,17 @@ class WorkflowExecutor:
                 await task_runner.submit_workflow_task(
                     run.workflow_id, run.id, run.variables, resume=True,
                 )
+
+
+def _summarize_output(output: dict) -> str:
+    """Create a short summary of node output for logging."""
+    if not output:
+        return "{}"
+    parts = []
+    for key in ("success", "login_result", "status", "completed", "failed",
+                "total", "branch", "waited", "chosen_index"):
+        if key in output:
+            parts.append(f"{key}={output[key]}")
+    if not parts:
+        return str({k: v for k, v in list(output.items())[:3]})
+    return ", ".join(parts)

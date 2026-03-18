@@ -89,11 +89,14 @@ class LoginNode(BaseNode):
         if not context.fb_actions:
             raise NodeExecutionError("No browser session — add a Login node first")
 
+        email = context.account.fb_email if context.account else "?"
+        logger.info("Logowanie do Facebook: %s", email)
         password = context.account.fb_password if context.account else ""
         success = await context.fb_actions.login(password)
 
         result = "success" if success else "checkpoint"
         context.variables["login_result"] = result
+        logger.info("Login result: %s", result)
         return {"login_result": result, "success": success}
 
     def validate_config(self, config: dict) -> list[str]:
@@ -120,6 +123,9 @@ class PostGroupNode(BaseNode):
 
         if not groups:
             raise NodeExecutionError("No groups configured")
+
+        logger.info("PostGroup: %d grup, tresc=%d znakow, fanpage=%s, test=%s",
+                    len(groups), len(default_content), publish_as_fanpage or "brak", test_mode)
 
         # Identity switching: switch to fanpage ONCE before the loop, or verify personal
         switched_to_fanpage = False
@@ -184,6 +190,9 @@ class PostGroupNode(BaseNode):
                 group_media = group.get("media_files") or config.get("default_media_files") or []
 
                 try:
+                    logger.info("Grupa %d/%d: %s (bg=%s, media=%d)",
+                                i + 1, len(active_groups), url,
+                                group_bg or "brak", len(group_media))
                     success = await context.fb_actions.publish_on_group(
                         url, content,
                         media_urls=group_media or None,
@@ -195,8 +204,10 @@ class PostGroupNode(BaseNode):
                     })
                     if success:
                         completed += 1
+                        logger.info("Grupa %d/%d: OPUBLIKOWANO", i + 1, len(active_groups))
                     else:
                         failed += 1
+                        logger.warning("Grupa %d/%d: NIEPOWODZENIE", i + 1, len(active_groups))
                 except Exception as exc:
                     logger.error("Failed to post to group %s: %s", url, exc)
                     results.append({"url": url, "success": False, "error": str(exc)})
@@ -270,11 +281,14 @@ class PostFanpageNode(BaseNode):
         if not context.fb_actions:
             raise NodeExecutionError("No browser session")
 
+        logger.info("Publikacja na fanpage: %s (tresc: %d znakow, bg: %s, media: %d)",
+                    fanpage_url, len(content), background_style or "brak", len(media_files))
         success = await context.fb_actions.publish_on_fanpage(
             fanpage_url, content,
             background_style=background_style,
             media_urls=media_files or None,
         )
+        logger.info("PostFanpage result: success=%s", success)
         return {"success": success, "fanpage_url": fanpage_url}
 
     def validate_config(self, config: dict) -> list[str]:
@@ -297,7 +311,9 @@ class LikePageNode(BaseNode):
         if not context.fb_actions:
             raise NodeExecutionError("No browser session")
 
+        logger.info("Polubienie strony: %s", page_url)
         success = await context.fb_actions.like_page(page_url)
+        logger.info("LikePage result: success=%s", success)
         return {"success": success, "page_url": page_url}
 
 
@@ -313,7 +329,9 @@ class CommentNode(BaseNode):
         if not context.fb_actions:
             raise NodeExecutionError("No browser session")
 
+        logger.info("Komentarz na: %s (tresc: %d znakow)", post_url, len(comment_text))
         success = await context.fb_actions.comment_on_post(post_url, comment_text)
+        logger.info("Comment result: success=%s", success)
         return {"success": success}
 
 
@@ -329,7 +347,9 @@ class SendMessageNode(BaseNode):
         if not context.fb_actions:
             raise NodeExecutionError("No browser session")
 
+        logger.info("Wiadomosc do: %s (tresc: %d znakow)", profile_url, len(message_text))
         success = await context.fb_actions.send_message(profile_url, message_text)
+        logger.info("SendMessage result: success=%s", success)
         return {"success": success}
 
 
@@ -408,9 +428,12 @@ class IfElseNode(BaseNode):
         else:
             result = False
 
+        branch = "true" if result else "false"
+        logger.info("Warunek: %s %s %s → %s (branch=%s)", variable, operator, expected, actual, branch)
+
         # Return which branch to follow: "true" or "false" handle ID
         context.variables[f"_condition_{context.current_node_id}"] = result
-        return {"condition_result": result, "branch": "true" if result else "false"}
+        return {"condition_result": result, "branch": branch}
 
 
 class LoopNode(BaseNode):
@@ -431,6 +454,8 @@ class LoopNode(BaseNode):
         context.variables[loop_key] = current
 
         done = current >= iterations
+        logger.info("Petla: iteracja %d/%d (%s=%d, branch=%s)",
+                    current, iterations, iterator_var, current, "done" if done else "body")
         return {
             "iteration": current,
             "total": iterations,
@@ -448,6 +473,7 @@ class RandomChoiceNode(BaseNode):
     async def execute(self, context: "ExecutionContext", config: dict) -> dict:
         weights = config.get("weights", [1, 1])
         chosen = random.choices(range(len(weights)), weights=weights, k=1)[0]
+        logger.info("Losowy wybor: index=%d z %d opcji (wagi=%s)", chosen, len(weights), weights)
         return {"chosen_index": chosen, "branch": f"choice_{chosen}"}
 
 
@@ -485,6 +511,7 @@ class VariableNode(BaseNode):
             value = _resolve_var(raw_value, context.variables)
 
         context.variables[name] = value
+        logger.info("Zmienna: %s = %s (typ=%s)", name, str(value)[:100], var_type)
         return {"name": name, "value": value}
 
 
@@ -501,6 +528,7 @@ class WebhookNode(BaseNode):
         body_template = config.get("body_template", "")
         body = _resolve_var(body_template, context.variables) if body_template else None
 
+        logger.info("Webhook: %s %s", method, url)
         async with httpx.AsyncClient(timeout=30.0) as client:
             if method == "GET":
                 resp = await client.get(url)
@@ -509,6 +537,7 @@ class WebhookNode(BaseNode):
             else:
                 resp = await client.post(url, content=body, headers={"Content-Type": "application/json"})
 
+        logger.info("Webhook response: %d (%d bytes)", resp.status_code, len(resp.text))
         return {"status_code": resp.status_code, "response_body": resp.text[:500]}
 
     def validate_config(self, config: dict) -> list[str]:

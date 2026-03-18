@@ -94,13 +94,25 @@ async def submit_workflow_task(
     """Submit a workflow execution as an async task."""
     from app.workflow.executor import WorkflowExecutor
 
+    logger.info("Submitting workflow task: workflow=%d run=%d resume=%s (active tasks: %d)",
+                workflow_id, run_id, resume, len(_running_tasks))
     executor = WorkflowExecutor()
     task = asyncio.create_task(
         executor.execute(workflow_id, run_id, variables, resume=resume)
     )
     task_key = f"workflow:{workflow_id}:{run_id}"
     _running_tasks[task_key] = task
-    task.add_done_callback(lambda t: _running_tasks.pop(task_key, None))
+
+    def _on_done(t):
+        _running_tasks.pop(task_key, None)
+        if t.cancelled():
+            logger.info("Workflow task %s cancelled", task_key)
+        elif t.exception():
+            logger.error("Workflow task %s failed: %s", task_key, t.exception())
+        else:
+            logger.info("Workflow task %s finished (active tasks: %d)", task_key, len(_running_tasks))
+
+    task.add_done_callback(_on_done)
 
 
 async def cancel_workflow_task(workflow_id: int, run_id: int) -> bool:

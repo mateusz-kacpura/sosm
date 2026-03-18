@@ -269,8 +269,8 @@ def _detect_system() -> dict:
         elif current_w:
             info["screen_width"] = current_w
             info["screen_height"] = current_h
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("xrandr failed (using default screen): %s", e)
 
     # --- Available work area via _NET_WORKAREA ---
     try:
@@ -289,7 +289,8 @@ def _detect_system() -> dict:
             info["avail_height"] = min(wa_h, info["screen_height"])
             info["screen_x"] = wa_x
             info["screen_y"] = wa_y
-    except Exception:
+    except Exception as e:
+        logger.debug("xprop failed (using default workarea): %s", e)
         info["avail_width"] = info["screen_width"]
         info["avail_height"] = info["screen_height"] - 40
 
@@ -304,8 +305,8 @@ def _detect_system() -> dict:
             depth = int(match.group(1))
             if depth in (8, 16, 24, 30, 32):
                 info["color_depth"] = depth
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("xdpyinfo failed (using default color depth): %s", e)
 
     # --- Device pixel ratio (HiDPI) ---
     try:
@@ -325,8 +326,8 @@ def _detect_system() -> dict:
                         if dpi > 0:
                             info["device_pixel_ratio"] = round(dpi / 96.0, 2)
                     break
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("DPI detection failed (using default): %s", e)
 
     # --- System locale → navigator.language ---
     try:
@@ -343,16 +344,16 @@ def _detect_system() -> dict:
                 lang = f"{parts[0]}-{parts[1]}"  # "pl-PL"
                 info["language"] = lang
                 info["languages"] = [lang, parts[0]]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Locale detection failed (using default en-US): %s", e)
 
     # --- Media devices ---
     # Webcams: /dev/video* (physical cameras create device pairs)
     try:
         video_devs = _glob("/dev/video*")
         info["webcams"] = max(len(video_devs) // 2, 0)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Webcam detection failed: %s", e)
 
     # Microphones: unique ALSA capture cards
     try:
@@ -366,8 +367,8 @@ def _detect_system() -> dict:
             if line.startswith("card")
         }
         info["micros"] = len(cards) if cards else 0
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Microphone detection failed (arecord): %s", e)
 
     # Speakers: unique ALSA playback cards
     try:
@@ -381,8 +382,8 @@ def _detect_system() -> dict:
             if line.startswith("card")
         }
         info["speakers"] = len(cards) if cards else 0
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Speaker detection failed (aplay): %s", e)
 
     # --- Dark theme detection ---
     # Firefox checks GTK theme for prefers-color-scheme media query.
@@ -396,8 +397,8 @@ def _detect_system() -> dict:
         ).strip().strip("'\"").lower()
         if "dark" in gtk_theme:
             info["dark_theme"] = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("GTK theme detection failed: %s", e)
     if not info["dark_theme"]:
         try:
             color_scheme = subprocess.check_output(
@@ -407,8 +408,8 @@ def _detect_system() -> dict:
             ).strip().strip("'\"").lower()
             if "dark" in color_scheme:
                 info["dark_theme"] = True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Color scheme detection failed: %s", e)
 
     # --- Computed values (maximized browser window) ---
     info["outer_width"] = info["avail_width"]
@@ -464,8 +465,8 @@ def _detect_fonts() -> list[str]:
                 len(matched), len(installed), len(_KNOWN_FONT_FAMILIES),
             )
             return matched
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("fc-list failed: %s", e)
 
     logger.info("fc-list unavailable — using fallback font list (%d fonts)", len(_LINUX_FONTS))
     return _LINUX_FONTS

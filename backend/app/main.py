@@ -1,5 +1,8 @@
 import os
 import sys
+import time
+import logging
+from logging.handlers import RotatingFileHandler
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,15 +11,61 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.config import settings
 from app.core import security
-import logging
 
-logging.basicConfig(level=logging.INFO)
+# ── Logging configuration ──
+_LOG_FORMAT = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+_LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format=_LOG_FORMAT,
+    datefmt=_LOG_DATE_FORMAT,
+)
+
+# File handler with rotation (10 MB per file, keep 5 backups)
+_log_dir = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', 'logs',
+)
+os.makedirs(_log_dir, exist_ok=True)
+_file_handler = RotatingFileHandler(
+    os.path.join(_log_dir, "sosm.log"),
+    maxBytes=10 * 1024 * 1024,
+    backupCount=5,
+    encoding="utf-8",
+)
+_file_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATE_FORMAT))
+_file_handler.setLevel(logging.INFO)
+logging.getLogger().addHandler(_file_handler)
+
+# Quiet noisy third-party loggers
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
 )
+
+# HTTP request logging middleware
+class RequestLogMiddleware(BaseHTTPMiddleware):
+    _SKIP_PREFIXES = ("/_next/", "/static/", "/favicon")
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        if any(path.startswith(p) for p in self._SKIP_PREFIXES):
+            return await call_next(request)
+        t0 = time.monotonic()
+        response = await call_next(request)
+        dt_ms = (time.monotonic() - t0) * 1000
+        logger.info(
+            "%s %s → %d (%.0fms)",
+            request.method, path, response.status_code, dt_ms,
+        )
+        return response
+
 
 # Auth middleware — protects /api/ when password is set
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -49,9 +98,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
 
 
-# Middleware order: AuthMiddleware added first (inner), CORS added second (outer)
-# This ensures CORS headers are set even on 401 responses
+# Middleware order: innermost first, outermost last.
+# Request flows: CORS → RequestLog → Auth → route handler
 app.add_middleware(AuthMiddleware)
+app.add_middleware(RequestLogMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
