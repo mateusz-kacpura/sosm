@@ -154,6 +154,13 @@ _LINUX_FONTS = [
     "Noto Sans", "Noto Serif", "Noto Sans Mono", "Noto Mono", "Noto Color Emoji",
     "Noto Sans CJK HK", "Noto Serif CJK JP", "Noto Serif CJK SC",
     "Noto Sans Mono CJK SC",
+    "Noto Sans Canadian Aboriginal", "Noto Sans Gunjala Gondi",
+    "Noto Sans Masaram Gondi", "Noto Serif Yezidi",
+    # Full font names (family + style) — needed because PixelScan and some
+    # detection tools test by full name (e.g. "Noto Sans Canadian Aboriginal
+    # Regular") which Firefox's font.system.whitelist must also allow.
+    "Noto Sans Canadian Aboriginal Regular", "Noto Sans Gunjala Gondi Regular",
+    "Noto Sans Masaram Gondi Regular", "Noto Serif Yezidi Regular",
     # URW/Ghostscript (metric-compatible classics)
     "Nimbus Sans", "Nimbus Roman", "Nimbus Mono PS",
     # Free fonts (GNU FreeFont project)
@@ -186,6 +193,10 @@ _KNOWN_FONT_FAMILIES = {
     "Noto Kufi Arabic",
     "Noto Sans CJK HK", "Noto Serif CJK JP", "Noto Serif CJK SC",
     "Noto Sans Mono CJK SC",
+    "Noto Sans Canadian Aboriginal", "Noto Sans Gunjala Gondi",
+    "Noto Sans Masaram Gondi", "Noto Serif Yezidi",
+    "Noto Sans Canadian Aboriginal Regular", "Noto Sans Gunjala Gondi Regular",
+    "Noto Sans Masaram Gondi Regular", "Noto Serif Yezidi Regular",
     # URW/Ghostscript
     "Nimbus Sans", "Nimbus Sans Narrow", "Nimbus Roman", "Nimbus Mono PS",
     "C059", "P052", "URW Bookman", "URW Gothic",
@@ -373,6 +384,32 @@ def _detect_system() -> dict:
     except Exception:
         pass
 
+    # --- Dark theme detection ---
+    # Firefox checks GTK theme for prefers-color-scheme media query.
+    # Camoufox may not inherit the system theme — detect it explicitly.
+    info["dark_theme"] = False
+    try:
+        gtk_theme = subprocess.check_output(
+            ["gsettings", "get", "org.gnome.desktop.interface", "gtk-theme"],
+            text=True, timeout=5,
+            stderr=subprocess.DEVNULL, env=_SUBPROCESS_ENV,
+        ).strip().strip("'\"").lower()
+        if "dark" in gtk_theme:
+            info["dark_theme"] = True
+    except Exception:
+        pass
+    if not info["dark_theme"]:
+        try:
+            color_scheme = subprocess.check_output(
+                ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                text=True, timeout=5,
+                stderr=subprocess.DEVNULL, env=_SUBPROCESS_ENV,
+            ).strip().strip("'\"").lower()
+            if "dark" in color_scheme:
+                info["dark_theme"] = True
+        except Exception:
+            pass
+
     # --- Computed values (maximized browser window) ---
     info["outer_width"] = info["avail_width"]
     info["outer_height"] = info["avail_height"]
@@ -381,13 +418,13 @@ def _detect_system() -> dict:
 
     logger.info(
         "System detected: screen=%dx%d, avail=%dx%d, dpr=%.1f, "
-        "depth=%d, locale=%s, devices=%d/%d/%d, cpu=%d",
+        "depth=%d, locale=%s, devices=%d/%d/%d, cpu=%d, dark=%s",
         info["screen_width"], info["screen_height"],
         info["avail_width"], info["avail_height"],
         info["device_pixel_ratio"], info["color_depth"],
         info["language"],
         info["webcams"], info["micros"], info["speakers"],
-        info["cpu_count"],
+        info["cpu_count"], info["dark_theme"],
     )
     return info
 
@@ -396,6 +433,12 @@ def _detect_system() -> dict:
 def _detect_fonts() -> list[str]:
     """Detect installed fonts via fc-list, filtered to well-known families.
 
+    Queries BOTH family names (%{family}) and full names (%{fullname}) because
+    some detection tools (PixelScan) test fonts by full name including style
+    suffix (e.g. "Noto Sans Canadian Aboriginal Regular").  Firefox's
+    font.system.whitelist must contain the exact lookup string used by CSS
+    font-family for the font to be visible.
+
     Returns only fonts that are BOTH installed on the system AND in the
     _KNOWN_FONT_FAMILIES whitelist — avoids obscure fonts (TeX, MathJax)
     that would make the fingerprint uniquely identifiable.
@@ -403,7 +446,7 @@ def _detect_fonts() -> list[str]:
     """
     try:
         out = subprocess.check_output(
-            ["fc-list", "--format", "%{family}\n"],
+            ["fc-list", "--format", "%{family}\n%{fullname}\n"],
             text=True, timeout=10,
             stderr=subprocess.DEVNULL, env=_SUBPROCESS_ENV,
         )
@@ -639,6 +682,21 @@ class BrowserManager:
             webgl_config=_WEBGL_CONFIG,
             exclude_addons=list(DefaultAddons),
             i_know_what_im_doing=True,
+            # Sync Firefox Intl locale with navigator.language.
+            # locale= triggers Playwright's Browser.setLocaleOverride via Juggler,
+            # which sets docShell.languageOverride → JS::SetRealmLocaleOverride.
+            # Without this, Intl.DateTimeFormat().resolvedOptions().locale returns
+            # en-US instead of matching navigator.language (detectable by PixelScan).
+            locale=sys_info["language"],
+            # Match system dark/light theme so prefers-color-scheme is correct.
+            # Camoufox can't detect the GTK theme, so we detect it in Python
+            # and pass via Playwright's color_scheme (Juggler's setColorScheme).
+            # Without this, prefersLightColor=true leaks on PixelScan.
+            color_scheme="dark" if sys_info["dark_theme"] else "light",
+            firefox_user_prefs={
+                "intl.locale.requested": sys_info["language"],
+                "ui.systemUsesDarkTheme": 1 if sys_info["dark_theme"] else 0,
+            },
         )
 
         logger.info(
