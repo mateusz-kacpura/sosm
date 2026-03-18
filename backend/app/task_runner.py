@@ -87,6 +87,38 @@ async def submit_fingerprint_task(
     task.add_done_callback(lambda t: _running_tasks.pop(task_key, None))
 
 
+async def submit_fanpage_verify_task(fanpage_id: int, account_id: int):
+    """Submit fanpage ownership verification as an async task with account lock."""
+    from app.worker import run_fanpage_verification
+
+    async def _run_with_lock():
+        lock = _account_locks[account_id]
+        async with lock:
+            async with _concurrency_semaphore:
+                await run_fanpage_verification(fanpage_id, account_id)
+
+    task = asyncio.create_task(_run_with_lock())
+    task_key = f"fanpage_verify:{fanpage_id}"
+    _running_tasks[task_key] = task
+    task.add_done_callback(lambda t: _running_tasks.pop(task_key, None))
+
+
+async def submit_fanpage_discovery_task(account_id: int):
+    """Submit fanpage discovery as an async task with account lock."""
+    from app.worker import run_fanpage_discovery
+
+    async def _run_with_lock():
+        lock = _account_locks[account_id]
+        async with lock:
+            async with _concurrency_semaphore:
+                await run_fanpage_discovery(account_id)
+
+    task = asyncio.create_task(_run_with_lock())
+    task_key = f"fanpage_discovery:{account_id}"
+    _running_tasks[task_key] = task
+    task.add_done_callback(lambda t: _running_tasks.pop(task_key, None))
+
+
 async def submit_workflow_task(
     workflow_id: int, run_id: int,
     variables: dict = None, resume: bool = False,

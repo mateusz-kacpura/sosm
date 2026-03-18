@@ -16,6 +16,10 @@ class Account(Base):
     session_cookies_backup = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # Fanpage discovery status
+    fanpage_discovery_status = Column(String, nullable=True)  # None, PENDING, RUNNING, COMPLETED, ERROR
+    fanpage_discovery_error = Column(String, nullable=True)
+
     campaigns = relationship("Campaign", back_populates="account")
     fingerprint_tests = relationship("FingerprintTest", back_populates="account")
     fanpages = relationship("Fanpage", back_populates="account", cascade="all, delete-orphan")
@@ -29,6 +33,11 @@ class Fanpage(Base):
     fanpage_url = Column(String, nullable=False)
     fanpage_name = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Verification: UNVERIFIED, PENDING, RUNNING, VERIFIED, FAILED, ERROR
+    verification_status = Column(String, default="UNVERIFIED", server_default="UNVERIFIED", nullable=False)
+    verification_error = Column(String, nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
 
     account = relationship("Account", back_populates="fanpages")
 

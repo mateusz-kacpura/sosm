@@ -101,6 +101,131 @@ class TestFanpageModel:
         assert result.scalars().first() is None
 
 
+class TestAccountDiscoveryFields:
+    async def test_default_discovery_status(self, db_session):
+        account = AccountFactory.create()
+        db_session.add(account)
+        await db_session.flush()
+
+        result = await db_session.execute(
+            select(Account).where(Account.id == account.id)
+        )
+        fetched = result.scalars().first()
+        assert fetched.fanpage_discovery_status is None
+        assert fetched.fanpage_discovery_error is None
+
+    async def test_discovery_status_update(self, db_session):
+        account = AccountFactory.create()
+        db_session.add(account)
+        await db_session.flush()
+
+        account.fanpage_discovery_status = "RUNNING"
+        await db_session.flush()
+
+        result = await db_session.execute(
+            select(Account).where(Account.id == account.id)
+        )
+        fetched = result.scalars().first()
+        assert fetched.fanpage_discovery_status == "RUNNING"
+
+    async def test_discovery_completed_with_error_cleared(self, db_session):
+        account = AccountFactory.create()
+        db_session.add(account)
+        await db_session.flush()
+
+        account.fanpage_discovery_status = "ERROR"
+        account.fanpage_discovery_error = "Login failed"
+        await db_session.flush()
+
+        account.fanpage_discovery_status = "COMPLETED"
+        account.fanpage_discovery_error = None
+        await db_session.flush()
+
+        result = await db_session.execute(
+            select(Account).where(Account.id == account.id)
+        )
+        fetched = result.scalars().first()
+        assert fetched.fanpage_discovery_status == "COMPLETED"
+        assert fetched.fanpage_discovery_error is None
+
+    async def test_discovery_error_stored(self, db_session):
+        account = AccountFactory.create()
+        db_session.add(account)
+        await db_session.flush()
+
+        account.fanpage_discovery_status = "ERROR"
+        account.fanpage_discovery_error = "Login failed (checkpoint or session expired)"
+        await db_session.flush()
+
+        result = await db_session.execute(
+            select(Account).where(Account.id == account.id)
+        )
+        fetched = result.scalars().first()
+        assert fetched.fanpage_discovery_status == "ERROR"
+        assert fetched.fanpage_discovery_error == "Login failed (checkpoint or session expired)"
+
+
+class TestFanpageVerificationFields:
+    async def test_default_verification_status(self, db_session):
+        account = AccountFactory.create()
+        db_session.add(account)
+        await db_session.flush()
+
+        fanpage = FanpageFactory.create(account_id=account.id)
+        db_session.add(fanpage)
+        await db_session.flush()
+
+        result = await db_session.execute(
+            select(Fanpage).where(Fanpage.id == fanpage.id)
+        )
+        fetched = result.scalars().first()
+        assert fetched.verification_status == "UNVERIFIED"
+        assert fetched.verification_error is None
+        assert fetched.verified_at is None
+
+    async def test_verification_status_update(self, db_session):
+        from datetime import datetime, timezone
+
+        account = AccountFactory.create()
+        db_session.add(account)
+        await db_session.flush()
+
+        fanpage = FanpageFactory.create(account_id=account.id)
+        db_session.add(fanpage)
+        await db_session.flush()
+
+        fanpage.verification_status = "VERIFIED"
+        fanpage.verified_at = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        await db_session.flush()
+
+        result = await db_session.execute(
+            select(Fanpage).where(Fanpage.id == fanpage.id)
+        )
+        fetched = result.scalars().first()
+        assert fetched.verification_status == "VERIFIED"
+        assert fetched.verified_at is not None
+
+    async def test_verification_error_stored(self, db_session):
+        account = AccountFactory.create()
+        db_session.add(account)
+        await db_session.flush()
+
+        fanpage = FanpageFactory.create(account_id=account.id)
+        db_session.add(fanpage)
+        await db_session.flush()
+
+        fanpage.verification_status = "FAILED"
+        fanpage.verification_error = "Fanpage not found in profile switcher"
+        await db_session.flush()
+
+        result = await db_session.execute(
+            select(Fanpage).where(Fanpage.id == fanpage.id)
+        )
+        fetched = result.scalars().first()
+        assert fetched.verification_status == "FAILED"
+        assert fetched.verification_error == "Fanpage not found in profile switcher"
+
+
 class TestCampaignModel:
     async def test_campaign_creation(self, db_session):
         account = AccountFactory.create()

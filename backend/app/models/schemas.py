@@ -24,6 +24,9 @@ class FanpageResponse(BaseModel):
     fanpage_url: str
     fanpage_name: Optional[str] = None
     created_at: datetime
+    verification_status: str = "UNVERIFIED"
+    verification_error: Optional[str] = None
+    verified_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -32,6 +35,8 @@ class AccountResponse(AccountBase):
     id: int
     created_at: datetime
     fanpages: list[FanpageResponse] = []
+    fanpage_discovery_status: Optional[str] = None
+    fanpage_discovery_error: Optional[str] = None
 
     class Config:
         from_attributes = True

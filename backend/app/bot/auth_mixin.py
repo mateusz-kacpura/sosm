@@ -16,8 +16,15 @@ class AuthMixin:
         """Log into Facebook, return True if successful."""
         self._last_password = password
         logger.info("Rozpoczynam logowanie dla: %s", self.account_email)
-        await self.page.goto("https://www.facebook.com/")
-        await HumanImitation.human_delay(2, 5)
+        try:
+            await self.page.goto(
+                "https://www.facebook.com/",
+                wait_until="commit",
+                timeout=15_000,
+            )
+        except Exception:
+            pass  # FF149 Juggler nav events unreliable — page loads anyway
+        await HumanImitation.human_delay(4, 7)
 
         # Dismiss cookie consent banner FIRST — it can overlay the login form
         # and prevent input[name='email'] from being found.
@@ -61,6 +68,11 @@ class AuthMixin:
                 if not await self._handle_account_picker(password):
                     return False
                 return True
+
+        # Start CAPTCHA pre-solve in background BEFORE entering credentials.
+        # FB uses a constant sitekey; CapMonster takes ~80s so starting early
+        # ensures the token is ready when the checkpoint page appears.
+        await captcha_solver.start_presolve()
 
         # Enter email
         logger.info("Wprowadzanie poswiadczen...")
@@ -116,13 +128,48 @@ class AuthMixin:
                 )
                 return False
 
-        # Verify login succeeded — login form should be gone
+        # Verify login succeeded — need BOTH: login form gone AND nav bar present
         still_login = await self.dom.find("input[name='email']", timeout=2.0)
         if still_login:
             logger.error("Logowanie nie powiodlo sie - formularz nadal widoczny")
             os.makedirs(self.screenshot_dir, exist_ok=True)
             await self.page.screenshot(path=
                 os.path.join(self.screenshot_dir, f"login_failed_{self.account_email}.png")
+            )
+            return False
+
+        # Double-check: nav bar must be present (catches reCAPTCHA pages
+        # where login form is gone but session isn't established yet)
+        nav_bar = await self.dom.find("div[role='banner']", timeout=5.0)
+        if not nav_bar:
+            # Final attempt — maybe a redirect is pending
+            logger.info("Brak paska nawigacji po loginie — czekam na przekierowanie...")
+            await HumanImitation.human_delay(3, 5)
+            nav_bar = await self.dom.find("div[role='banner']", timeout=5.0)
+
+        if not nav_bar:
+            # Could be a reCAPTCHA page that wasn't caught by checkpoint detector
+            recaptcha_info = await captcha_solver.detect_recaptcha(self.page)
+            if recaptcha_info:
+                logger.warning("reCAPTCHA v2 challenge page detected after login")
+                if await captcha_solver.solve_captcha_on_checkpoint(self.page):
+                    logger.info("reCAPTCHA solved — waiting for redirect...")
+                    await HumanImitation.human_delay(5, 8)
+                    nav_bar = await self.dom.find("div[role='banner']", timeout=5.0)
+                    if nav_bar:
+                        logger.info("Pomyslnie zalogowano (po rozwiazaniu reCAPTCHA)")
+                        return True
+                logger.error("Logowanie zablokowane - reCAPTCHA")
+                os.makedirs(self.screenshot_dir, exist_ok=True)
+                await self.page.screenshot(path=
+                    os.path.join(self.screenshot_dir, f"recaptcha_failed_{self.account_email}.png")
+                )
+                return False
+
+            logger.error("Logowanie nie powiodlo sie - brak paska nawigacji")
+            os.makedirs(self.screenshot_dir, exist_ok=True)
+            await self.page.screenshot(path=
+                os.path.join(self.screenshot_dir, f"login_no_navbar_{self.account_email}.png")
             )
             return False
 

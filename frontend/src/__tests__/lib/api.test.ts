@@ -168,4 +168,28 @@ describe("api object", () => {
       expect.objectContaining({ method: "DELETE" })
     );
   });
+
+  it("accounts.fanpages.get calls correct endpoint", async () => {
+    await api.accounts.fanpages.get(5, 10);
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/accounts/5/fanpages/10",
+      expect.anything()
+    );
+  });
+
+  it("accounts.fanpages.verify sends POST to verify endpoint", async () => {
+    await api.accounts.fanpages.verify(5, 10);
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/accounts/5/fanpages/10/verify",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+
+  it("accounts.discoverFanpages sends POST to discover endpoint", async () => {
+    await api.accounts.discoverFanpages(3);
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/accounts/3/discover-fanpages",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
 });

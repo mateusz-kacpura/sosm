@@ -280,6 +280,187 @@ class ProfileMixin:
         await self.page.keyboard.press("Escape")
         return False
 
+    async def verify_fanpage_ownership(self, fanpage_url: str) -> dict:
+        """Check if the logged-in account manages a fanpage (without switching).
+
+        Returns dict: {"found": bool, "page_name": str|None, "error": str|None}
+        """
+        from .dom_walker import _eval_js
+
+        result = {"found": False, "page_name": None, "error": None}
+
+        # Navigate to fanpage to extract its name
+        logger.info("[verify] Nawigacja do fanpage: %s", fanpage_url)
+        await self.page.goto(fanpage_url)
+        await HumanImitation.human_delay(3, 5)
+
+        # Wait for the page to load
+        title = None
+        for _ in range(10):
+            title = await _eval_js(self.page, "document.title")
+            if title and title != "Facebook" and "|" in str(title):
+                break
+            await HumanImitation.human_delay(1.5, 2.5)
+
+        # Check for login modal
+        login_modal = await _eval_js(self.page, """(() => {
+            const emailField = document.querySelector(
+                "input[name='email'], input[type='email']"
+            );
+            const passField = document.querySelector(
+                "input[name='pass'], input[type='password']"
+            );
+            if (!emailField || !passField) return false;
+            const er = emailField.getBoundingClientRect();
+            const pr = passField.getBoundingClientRect();
+            if (er.width < 100 || er.height < 20
+                || pr.width < 100 || pr.height < 20) return false;
+            if (emailField.closest("div[role='dialog']")) return true;
+            if (!document.querySelector("div[role='banner']")) return true;
+            if (Math.abs(er.y - pr.y) < 300) return true;
+            return false;
+        })()""")
+        if login_modal:
+            logger.warning("[verify] Sesja wygasla — modal logowania")
+            password = getattr(self, '_last_password', None)
+            if password and await self._handle_login_modal(password):
+                await self.page.goto(fanpage_url)
+                await HumanImitation.human_delay(3, 5)
+            else:
+                result["error"] = "Login session expired and re-login failed"
+                return result
+
+        # Extract page name
+        page_name = await _eval_js(self.page, """(() => {
+            const og = document.querySelector('meta[property="og:title"]');
+            if (og) {
+                const c = og.getAttribute('content');
+                if (c) return c.replace(/\\s*[|·].*$/, '').trim();
+            }
+            const t = document.title.replace(/\\s*[|·-]\\s*Facebook.*$/i, '').trim();
+            if (t && t !== 'Facebook') return t;
+            const h1s = document.querySelectorAll('h1');
+            for (const h1 of h1s) {
+                const text = h1.innerText.trim();
+                if (text && text !== 'Zarządzanie stroną'
+                    && text !== 'Page management' && text !== 'Facebook') {
+                    return text;
+                }
+            }
+            return null;
+        })()""")
+
+        if not page_name:
+            result["error"] = "Could not extract fanpage name from page"
+            return result
+        result["page_name"] = page_name
+        logger.info("[verify] Nazwa fanpage: '%s'", page_name)
+
+        # Open avatar dropdown
+        if not await self._click_profile_avatar():
+            result["error"] = "Could not open profile avatar menu"
+            return result
+
+        # Search for fanpage in profile switcher
+        page_name_json = _json.dumps(page_name)
+        search_result = await _eval_js(self.page, f"""(() => {{
+            const pageName = {page_name_json};
+            const allBtns = document.querySelectorAll(
+                "div[role='button'][aria-label], a[role='button'][aria-label]"
+            );
+            for (const btn of allBtns) {{
+                const label = btn.getAttribute('aria-label') || '';
+                const r = btn.getBoundingClientRect();
+                if (r.width < 30 || r.height < 20 || r.y <= 0) continue;
+                if (label.includes(pageName)) {{
+                    return {{found: true, text: label.slice(0, 100)}};
+                }}
+            }}
+            // Fallback: search by visible text
+            const textBtns = document.querySelectorAll(
+                "div[role='button'], div[role='menuitem'], div[role='listitem']"
+            );
+            for (const btn of textBtns) {{
+                const text = (btn.innerText || '').trim();
+                if (text.includes(pageName) && text.length < 200) {{
+                    const r = btn.getBoundingClientRect();
+                    if (r.width > 30 && r.height > 20 && r.y > 0) {{
+                        return {{found: true, text: text.slice(0, 100)}};
+                    }}
+                }}
+            }}
+            return {{found: false}};
+        }})()""")
+
+        if search_result and search_result.get("found"):
+            logger.info("[verify] Fanpage FOUND in quick switcher: '%s'",
+                        search_result.get("text", ""))
+            result["found"] = True
+            await self.page.keyboard.press("Escape")
+            return result
+
+        # Not in quick list — try "Zobacz wszystkie profile"
+        see_all = await _eval_js(self.page, """(() => {
+            const byLabel = document.querySelector(
+                "div[role='button'][aria-label*='wszystkie profile'], "
+                + "div[role='button'][aria-label*='all profiles']"
+            );
+            if (byLabel) {
+                const r = byLabel.getBoundingClientRect();
+                if (r.width > 30 && r.height > 20)
+                    return {x: r.x, y: r.y, w: r.width, h: r.height,
+                            text: (byLabel.innerText || byLabel.getAttribute('aria-label') || '').trim().slice(0, 100)};
+            }
+            const btns = document.querySelectorAll("div[role='button'], a[role='button']");
+            for (const btn of btns) {
+                const text = (btn.innerText || '').trim().toLowerCase();
+                if (text.includes('wszystkie profile') || text.includes('all profiles')) {
+                    const r = btn.getBoundingClientRect();
+                    if (r.width > 30 && r.height > 20 && r.y > 0)
+                        return {x: r.x, y: r.y, w: r.width, h: r.height,
+                                text: btn.innerText.trim().slice(0, 100)};
+                }
+            }
+            return null;
+        })()""")
+
+        if see_all:
+            logger.info("[verify] Klikam: '%s'", see_all.get("text", ""))
+            await mouse_engine.click_element(self.page, see_all)
+            await HumanImitation.human_delay(2, 4)
+
+            expanded_result = await _eval_js(self.page, f"""(() => {{
+                const pageName = {page_name_json};
+                const btns = document.querySelectorAll(
+                    "div[role='button'], div[role='menuitem'], div[role='listitem'], a[role='button']"
+                );
+                for (const btn of btns) {{
+                    const label = btn.getAttribute('aria-label') || '';
+                    const text = (btn.innerText || '').trim();
+                    if ((label.includes(pageName) || text.includes(pageName))
+                        && text.length < 200) {{
+                        const r = btn.getBoundingClientRect();
+                        if (r.width > 30 && r.height > 20 && r.y > 0) {{
+                            return {{found: true, text: (label || text).slice(0, 100)}};
+                        }}
+                    }}
+                }}
+                return {{found: false}};
+            }})()""")
+
+            if expanded_result and expanded_result.get("found"):
+                logger.info("[verify] Fanpage FOUND in expanded list: '%s'",
+                            expanded_result.get("text", ""))
+                result["found"] = True
+
+        if not result["found"]:
+            logger.warning("[verify] Fanpage '%s' NOT found in profile switcher", page_name)
+
+        # Close menu
+        await self.page.keyboard.press("Escape")
+        await HumanImitation.human_delay(0.5, 1)
+        return result
+
     async def switch_to_personal_profile(self) -> bool:
         """Switch back to the personal Facebook profile via avatar dropdown.
 

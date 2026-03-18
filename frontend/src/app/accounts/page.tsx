@@ -24,7 +24,7 @@ import {
   DialogTitle,
   DialogTrigger
 } from "@/components/ui/dialog"
-import { PlusCircle, Shield, Globe, Mail, Key, Fingerprint, Loader2, ChevronDown, ChevronRight, Plus, Trash2, ExternalLink } from "lucide-react"
+import { PlusCircle, Shield, Globe, Mail, Key, Fingerprint, Loader2, ChevronDown, ChevronRight, Plus, Trash2, ExternalLink, CheckCircle2, XCircle, AlertCircle, ShieldCheck, Search } from "lucide-react"
 import { api } from "@/lib/api"
 
 interface FanpageData {
@@ -33,6 +33,45 @@ interface FanpageData {
   fanpage_url: string
   fanpage_name: string | null
   created_at: string
+  verification_status: string
+  verification_error: string | null
+  verified_at: string | null
+}
+
+function VerificationBadge({ status, error }: { status: string; error: string | null }) {
+  switch (status) {
+    case "VERIFIED":
+      return (
+        <span className="inline-flex items-center gap-1 text-emerald-400" title="Zweryfikowano">
+          <CheckCircle2 className="h-3.5 w-3.5" />
+        </span>
+      )
+    case "FAILED":
+      return (
+        <span className="inline-flex items-center gap-1 text-rose-400" title={error || "Weryfikacja nieudana"}>
+          <XCircle className="h-3.5 w-3.5" />
+        </span>
+      )
+    case "ERROR":
+      return (
+        <span className="inline-flex items-center gap-1 text-amber-400" title={error || "Błąd weryfikacji"}>
+          <AlertCircle className="h-3.5 w-3.5" />
+        </span>
+      )
+    case "PENDING":
+    case "RUNNING":
+      return (
+        <span className="inline-flex items-center gap-1 text-blue-400" title="Weryfikacja w toku...">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        </span>
+      )
+    default:
+      return (
+        <span className="inline-flex items-center gap-1 text-muted-foreground" title="Niezweryfikowano">
+          <ShieldCheck className="h-3.5 w-3.5 opacity-30" />
+        </span>
+      )
+  }
 }
 
 interface AccountData {
@@ -43,6 +82,8 @@ interface AccountData {
   browser_profile_id: string | null
   created_at: string
   fanpages: FanpageData[]
+  fanpage_discovery_status: string | null
+  fanpage_discovery_error: string | null
 }
 
 export default function AccountsPage() {
@@ -62,6 +103,7 @@ export default function AccountsPage() {
   const [newFanpageUrl, setNewFanpageUrl] = useState("")
   const [newFanpageName, setNewFanpageName] = useState("")
   const [addingFanpage, setAddingFanpage] = useState(false)
+  const [verifyingFanpage, setVerifyingFanpage] = useState<number | null>(null)
 
   async function fetchAccounts() {
     try {
@@ -77,6 +119,17 @@ export default function AccountsPage() {
   useEffect(() => {
     fetchAccounts()
   }, [])
+
+  // Poll when any fanpage has PENDING/RUNNING verification or discovery is active
+  useEffect(() => {
+    const hasActiveTask = accounts.some((acc) =>
+      acc.fanpages?.some((fp) => fp.verification_status === "PENDING" || fp.verification_status === "RUNNING")
+      || acc.fanpage_discovery_status === "PENDING" || acc.fanpage_discovery_status === "RUNNING"
+    )
+    if (!hasActiveTask) return
+    const interval = setInterval(fetchAccounts, 3000)
+    return () => clearInterval(interval)
+  }, [accounts])
 
   const handleAddAccount = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -122,27 +175,54 @@ export default function AccountsPage() {
     }
   }
 
+  const handleVerifyFanpage = useCallback(async (accountId: number, fanpageId: number) => {
+    setVerifyingFanpage(fanpageId)
+    try {
+      await api.accounts.fanpages.verify(accountId, fanpageId)
+      await fetchAccounts()
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setVerifyingFanpage(null)
+    }
+  }, [])
+
   const handleAddFanpage = useCallback(async (accountId: number) => {
     if (!newFanpageUrl.trim()) return
     setAddingFanpage(true)
     try {
-      await api.accounts.fanpages.create(accountId, {
+      const newFp = await api.accounts.fanpages.create(accountId, {
         fanpage_url: newFanpageUrl.trim(),
         fanpage_name: newFanpageName.trim() || undefined,
       })
       setNewFanpageUrl("")
       setNewFanpageName("")
       await fetchAccounts()
+      // Auto-verify if account has browser profile
+      const account = accounts.find((a) => a.id === accountId)
+      if (account?.browser_profile_id && newFp?.id) {
+        try { await api.accounts.fanpages.verify(accountId, newFp.id) } catch {}
+        await fetchAccounts()
+      }
     } catch (err: any) {
       setError(err.message)
     } finally {
       setAddingFanpage(false)
     }
-  }, [newFanpageUrl, newFanpageName])
+  }, [newFanpageUrl, newFanpageName, accounts])
 
   const handleDeleteFanpage = useCallback(async (accountId: number, fanpageId: number) => {
     try {
       await api.accounts.fanpages.delete(accountId, fanpageId)
+      await fetchAccounts()
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }, [])
+
+  const handleDiscoverFanpages = useCallback(async (accountId: number) => {
+    try {
+      await api.accounts.discoverFanpages(accountId)
       await fetchAccounts()
     } catch (err: any) {
       setError(err.message)
@@ -286,6 +366,11 @@ export default function AccountsPage() {
                         )}
                         <span className="text-primary font-semibold">{acc.fanpages?.length || 0}</span>
                         <span>{(acc.fanpages?.length || 0) === 1 ? "fanpage" : "fanpage'y"}</span>
+                        {(acc.fanpage_discovery_status === "PENDING" || acc.fanpage_discovery_status === "RUNNING") && (
+                          <span title="Wykrywanie fanpage'ów...">
+                            <Loader2 className="h-3 w-3 animate-spin text-blue-400" />
+                          </span>
+                        )}
                       </button>
                     </TableCell>
                     <TableCell>{acc.created_at ? new Date(acc.created_at).toLocaleDateString("pl-PL") : "-"}</TableCell>
@@ -306,8 +391,31 @@ export default function AccountsPage() {
                     <TableRow className="border-primary/5 bg-secondary/20 hover:bg-secondary/20">
                       <TableCell colSpan={6} className="py-3">
                         <div className="pl-6 space-y-3">
-                          <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
-                            Fanpage&apos;e konta {acc.fb_email}
+                          <div className="flex items-center gap-2">
+                            <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
+                              Fanpage&apos;e konta {acc.fb_email}
+                            </div>
+                            {acc.browser_profile_id && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 px-2 text-[10px] border-primary/20 hover:bg-primary/10"
+                                onClick={() => handleDiscoverFanpages(acc.id)}
+                                disabled={acc.fanpage_discovery_status === "PENDING" || acc.fanpage_discovery_status === "RUNNING"}
+                              >
+                                {acc.fanpage_discovery_status === "PENDING" || acc.fanpage_discovery_status === "RUNNING" ? (
+                                  <><Loader2 className="h-3 w-3 animate-spin mr-1" /> Wykrywanie...</>
+                                ) : (
+                                  <><Search className="h-3 w-3 mr-1" /> Wykryj fanpage&apos;e</>
+                                )}
+                              </Button>
+                            )}
+                            {acc.fanpage_discovery_status === "ERROR" && acc.fanpage_discovery_error && (
+                              <span className="text-[10px] text-rose-400" title={acc.fanpage_discovery_error}>
+                                <AlertCircle className="h-3 w-3 inline mr-0.5" />
+                                Błąd wykrywania
+                              </span>
+                            )}
                           </div>
 
                           {/* Existing fanpages */}
@@ -315,12 +423,23 @@ export default function AccountsPage() {
                             <div className="space-y-1.5">
                               {acc.fanpages.map((fp) => (
                                 <div key={fp.id} className="flex items-center gap-2 group">
+                                  <VerificationBadge status={fp.verification_status} error={fp.verification_error} />
                                   <ExternalLink className="h-3 w-3 text-primary shrink-0" />
                                   <span className="text-xs font-mono text-foreground truncate max-w-[300px]" title={fp.fanpage_url}>
                                     {fp.fanpage_url}
                                   </span>
                                   {fp.fanpage_name && (
                                     <span className="text-xs text-muted-foreground">({fp.fanpage_name})</span>
+                                  )}
+                                  {acc.browser_profile_id && fp.verification_status !== "PENDING" && fp.verification_status !== "RUNNING" && (
+                                    <button
+                                      onClick={() => handleVerifyFanpage(acc.id, fp.id)}
+                                      className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
+                                      title="Zweryfikuj własność fanpage'a"
+                                      disabled={verifyingFanpage === fp.id}
+                                    >
+                                      <ShieldCheck className="h-3 w-3" />
+                                    </button>
                                   )}
                                   <button
                                     onClick={() => handleDeleteFanpage(acc.id, fp.id)}

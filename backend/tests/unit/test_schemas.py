@@ -118,6 +118,159 @@ class TestFanpageSchemas:
         assert resp.fanpages == []
 
 
+class TestAccountDiscoverySchemas:
+    def test_account_response_default_discovery(self):
+        class FakeAccount:
+            id = 1
+            fb_email = "user@fb.com"
+            proxy_url = None
+            browser_profile_id = None
+            created_at = "2024-01-01T00:00:00"
+            fanpages = []
+
+        resp = AccountResponse.model_validate(FakeAccount(), from_attributes=True)
+        assert resp.fanpage_discovery_status is None
+        assert resp.fanpage_discovery_error is None
+
+    def test_account_response_discovery_running(self):
+        class FakeAccount:
+            id = 1
+            fb_email = "user@fb.com"
+            proxy_url = None
+            browser_profile_id = "abc-123"
+            created_at = "2024-01-01T00:00:00"
+            fanpages = []
+            fanpage_discovery_status = "RUNNING"
+            fanpage_discovery_error = None
+
+        resp = AccountResponse.model_validate(FakeAccount(), from_attributes=True)
+        assert resp.fanpage_discovery_status == "RUNNING"
+
+    def test_account_response_discovery_completed(self):
+        class FakeAccount:
+            id = 1
+            fb_email = "user@fb.com"
+            proxy_url = None
+            browser_profile_id = "abc-123"
+            created_at = "2024-01-01T00:00:00"
+            fanpages = []
+            fanpage_discovery_status = "COMPLETED"
+            fanpage_discovery_error = None
+
+        resp = AccountResponse.model_validate(FakeAccount(), from_attributes=True)
+        assert resp.fanpage_discovery_status == "COMPLETED"
+        assert resp.fanpage_discovery_error is None
+
+    def test_account_response_discovery_error(self):
+        class FakeAccount:
+            id = 1
+            fb_email = "user@fb.com"
+            proxy_url = None
+            browser_profile_id = "abc-123"
+            created_at = "2024-01-01T00:00:00"
+            fanpages = []
+            fanpage_discovery_status = "ERROR"
+            fanpage_discovery_error = "Login failed"
+
+        resp = AccountResponse.model_validate(FakeAccount(), from_attributes=True)
+        assert resp.fanpage_discovery_status == "ERROR"
+        assert resp.fanpage_discovery_error == "Login failed"
+
+
+class TestFanpageVerificationSchemas:
+    def test_fanpage_response_default_verification(self):
+        from datetime import datetime
+
+        class FakeFanpage:
+            id = 1
+            account_id = 10
+            fanpage_url = "https://facebook.com/page1"
+            fanpage_name = "Page One"
+            created_at = datetime(2024, 1, 1)
+
+        resp = FanpageResponse.model_validate(FakeFanpage(), from_attributes=True)
+        assert resp.verification_status == "UNVERIFIED"
+        assert resp.verification_error is None
+        assert resp.verified_at is None
+
+    def test_fanpage_response_verified(self):
+        from datetime import datetime, timezone
+
+        class FakeFanpage:
+            id = 1
+            account_id = 10
+            fanpage_url = "https://facebook.com/page1"
+            fanpage_name = "Page One"
+            created_at = datetime(2024, 1, 1)
+            verification_status = "VERIFIED"
+            verification_error = None
+            verified_at = datetime(2026, 3, 1, tzinfo=timezone.utc)
+
+        resp = FanpageResponse.model_validate(FakeFanpage(), from_attributes=True)
+        assert resp.verification_status == "VERIFIED"
+        assert resp.verified_at is not None
+
+    def test_fanpage_response_failed(self):
+        from datetime import datetime
+
+        class FakeFanpage:
+            id = 1
+            account_id = 10
+            fanpage_url = "https://facebook.com/page1"
+            fanpage_name = "Page One"
+            created_at = datetime(2024, 1, 1)
+            verification_status = "FAILED"
+            verification_error = "Not found in profile switcher"
+            verified_at = None
+
+        resp = FanpageResponse.model_validate(FakeFanpage(), from_attributes=True)
+        assert resp.verification_status == "FAILED"
+        assert resp.verification_error == "Not found in profile switcher"
+
+    def test_fanpage_response_error(self):
+        from datetime import datetime
+
+        class FakeFanpage:
+            id = 1
+            account_id = 10
+            fanpage_url = "https://facebook.com/page1"
+            fanpage_name = None
+            created_at = datetime(2024, 1, 1)
+            verification_status = "ERROR"
+            verification_error = "Login failed"
+            verified_at = None
+
+        resp = FanpageResponse.model_validate(FakeFanpage(), from_attributes=True)
+        assert resp.verification_status == "ERROR"
+        assert resp.verification_error == "Login failed"
+
+    def test_account_response_fanpages_include_verification(self):
+        from datetime import datetime, timezone
+
+        class FakeFanpage:
+            id = 1
+            account_id = 1
+            fanpage_url = "https://facebook.com/fp"
+            fanpage_name = "FP"
+            created_at = datetime(2024, 1, 1)
+            verification_status = "VERIFIED"
+            verification_error = None
+            verified_at = datetime(2026, 3, 1, tzinfo=timezone.utc)
+
+        class FakeAccount:
+            id = 1
+            fb_email = "user@fb.com"
+            proxy_url = None
+            browser_profile_id = "abc-123"
+            created_at = datetime(2024, 1, 1)
+            fanpages = [FakeFanpage()]
+
+        resp = AccountResponse.model_validate(FakeAccount(), from_attributes=True)
+        assert len(resp.fanpages) == 1
+        assert resp.fanpages[0].verification_status == "VERIFIED"
+        assert resp.fanpages[0].verified_at is not None
+
+
 class TestCampaignSchemas:
     def test_campaign_create_valid(self):
         campaign = CampaignCreate(

@@ -18,11 +18,16 @@ class CheckpointDetector:
         "Your Account Has Been Locked",
         "Twoje konto zostało zablokowane",
         "Security Check",
+        "Nie jestem robotem",
+        "I'm not a robot",
     ]
 
     CHECKPOINT_SELECTORS = [
         "input[name='approvals_code']",
         "div[aria-label='Captcha']",
+        "iframe[src*='recaptcha']",
+        "iframe[src*='google.com/recaptcha']",
+        ".g-recaptcha",
     ]
 
     @staticmethod

@@ -1,3 +1,4 @@
+import logging
 import os
 import random
 import uuid
@@ -18,6 +19,8 @@ from app.models.schemas import (
     TaskLogResponse, GroupResponse, GroupUpdate, CampaignGroupsReplace,
     FingerprintTestCreate, FingerprintTestResponse, FingerprintTestSummary,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -84,13 +87,27 @@ async def create_browser_profile(account_id: int, db: AsyncSession = Depends(get
         raise HTTPException(status_code=502, detail=str(e))
 
     db_account.browser_profile_id = profile_id
+
+    # Auto-trigger fanpage discovery
+    db_account.fanpage_discovery_status = "PENDING"
     await db.commit()
     await db.refresh(db_account)
+
+    try:
+        if settings.STANDALONE:
+            from app.task_runner import submit_fanpage_discovery_task
+            await submit_fanpage_discovery_task(account_id=account_id)
+        else:
+            from app.worker import run_fanpage_discovery_task
+            run_fanpage_discovery_task.delay(account_id=account_id)
+    except Exception:
+        logger.warning("Auto-trigger fanpage discovery failed for account %s", account_id, exc_info=True)
 
     return {
         "detail": "Profile created",
         "profile_id": profile_id,
         "account_id": account_id,
+        "fanpage_discovery": "PENDING",
     }
 
 
@@ -124,6 +141,75 @@ async def add_fanpage(account_id: int, fanpage: FanpageCreate, db: AsyncSession 
     await db.commit()
     await db.refresh(db_fanpage)
     return db_fanpage
+
+@router.get("/accounts/{account_id}/fanpages/{fanpage_id}", response_model=FanpageResponse)
+async def get_fanpage(account_id: int, fanpage_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Fanpage).where(Fanpage.id == fanpage_id, Fanpage.account_id == account_id)
+    )
+    db_fanpage = result.scalar_one_or_none()
+    if not db_fanpage:
+        raise HTTPException(status_code=404, detail="Fanpage not found")
+    return db_fanpage
+
+@router.post("/accounts/{account_id}/fanpages/{fanpage_id}/verify")
+async def verify_fanpage(account_id: int, fanpage_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Fanpage).where(Fanpage.id == fanpage_id, Fanpage.account_id == account_id)
+    )
+    db_fanpage = result.scalar_one_or_none()
+    if not db_fanpage:
+        raise HTTPException(status_code=404, detail="Fanpage not found")
+
+    account = await db.get(Account, account_id)
+    if not account or not account.browser_profile_id:
+        raise HTTPException(status_code=400, detail="Account has no browser profile configured")
+
+    if db_fanpage.verification_status in ("PENDING", "RUNNING"):
+        raise HTTPException(status_code=409, detail="Verification already in progress")
+
+    db_fanpage.verification_status = "PENDING"
+    db_fanpage.verification_error = None
+    await db.commit()
+    await db.refresh(db_fanpage)
+
+    from app.core.config import settings as _settings
+    if _settings.STANDALONE:
+        from app.task_runner import submit_fanpage_verify_task
+        await submit_fanpage_verify_task(fanpage_id=fanpage_id, account_id=account_id)
+    else:
+        from app.worker import run_fanpage_verify_task
+        run_fanpage_verify_task.delay(fanpage_id=fanpage_id, account_id=account_id)
+
+    return {"detail": "Verification started", "fanpage_id": fanpage_id, "status": "PENDING"}
+
+@router.post("/accounts/{account_id}/discover-fanpages")
+async def discover_fanpages(account_id: int, db: AsyncSession = Depends(get_db)):
+    """Trigger fanpage discovery for an account."""
+    result = await db.execute(select(Account).where(Account.id == account_id))
+    account = result.scalars().first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if not account.browser_profile_id:
+        raise HTTPException(status_code=400, detail="Account has no browser profile configured")
+
+    if account.fanpage_discovery_status in ("PENDING", "RUNNING"):
+        raise HTTPException(status_code=409, detail="Discovery already in progress")
+
+    account.fanpage_discovery_status = "PENDING"
+    account.fanpage_discovery_error = None
+    await db.commit()
+
+    from app.core.config import settings as _settings
+    if _settings.STANDALONE:
+        from app.task_runner import submit_fanpage_discovery_task
+        await submit_fanpage_discovery_task(account_id=account_id)
+    else:
+        from app.worker import run_fanpage_discovery_task
+        run_fanpage_discovery_task.delay(account_id=account_id)
+
+    return {"detail": "Discovery started", "account_id": account_id, "status": "PENDING"}
 
 @router.delete("/accounts/{account_id}/fanpages/{fanpage_id}")
 async def delete_fanpage(account_id: int, fanpage_id: int, db: AsyncSession = Depends(get_db)):

@@ -74,12 +74,18 @@ export const api = {
     create: (data: any) => fetchApi("/accounts/", { method: "POST", body: JSON.stringify(data) }),
     delete: (id: number) => fetchApi(`/accounts/${id}`, { method: "DELETE" }),
     createProfile: (id: number) => fetchApi(`/accounts/${id}/create-profile`, { method: "POST" }),
+    discoverFanpages: (id: number) =>
+      fetchApi(`/accounts/${id}/discover-fanpages`, { method: "POST" }),
     fanpages: {
       list: (accountId: number) => fetchApi(`/accounts/${accountId}/fanpages`),
+      get: (accountId: number, fanpageId: number) =>
+        fetchApi(`/accounts/${accountId}/fanpages/${fanpageId}`),
       create: (accountId: number, data: { fanpage_url: string; fanpage_name?: string }) =>
         fetchApi(`/accounts/${accountId}/fanpages`, { method: "POST", body: JSON.stringify(data) }),
       delete: (accountId: number, fanpageId: number) =>
         fetchApi(`/accounts/${accountId}/fanpages/${fanpageId}`, { method: "DELETE" }),
+      verify: (accountId: number, fanpageId: number) =>
+        fetchApi(`/accounts/${accountId}/fanpages/${fanpageId}/verify`, { method: "POST" }),
     },
   },
   campaigns: {
