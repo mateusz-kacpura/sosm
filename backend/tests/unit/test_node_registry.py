@@ -528,7 +528,7 @@ class TestPostFanpageNodeMultiUrl:
         ctx = FakeContext(fb_actions=mock_fb)
         node = get_node("post_fanpage")
 
-        with pytest.raises(NodeExecutionError, match="Brak URL fanpage"):
+        with pytest.raises(NodeExecutionError, match="Brak fanpage"):
             await node.execute(ctx, {"content": "Test"})
 
     async def test_no_session_raises(self):
@@ -549,12 +549,179 @@ class TestPostFanpageNodeMultiUrl:
     def test_validate_config_no_url(self):
         node = get_node("post_fanpage")
         errors = node.validate_config({"content": "Hello"})
-        assert any("URL" in e for e in errors)
+        assert any("fanpage" in e.lower() for e in errors)
 
     def test_validate_config_no_content(self):
         node = get_node("post_fanpage")
         errors = node.validate_config({"fanpage_url": "https://facebook.com/page1"})
-        assert any("Treść" in e.lower() or "treść" in e.lower() or "treś" in e for e in errors)
+        assert any("treść" in e.lower() or "treś" in e for e in errors)
+
+
+class TestPostFanpageNodeSchedule:
+    """Tests for PostFanpageNode with per-fanpage scheduling."""
+
+    async def test_fanpages_array_basic(self):
+        mock_fb = AsyncMock()
+        mock_fb.publish_on_fanpage = AsyncMock(return_value=True)
+        ctx = FakeContext(fb_actions=mock_fb)
+        ctx.variables["test_mode"] = True
+        node = get_node("post_fanpage")
+
+        result = await node.execute(ctx, {
+            "fanpages": [
+                {"url": "https://facebook.com/page1", "content": "Post 1"},
+                {"url": "https://facebook.com/page2", "content": "Post 2"},
+            ],
+        })
+        assert result["total"] == 2
+        assert result["completed"] == 2
+        assert result["failed"] == 0
+        assert mock_fb.publish_on_fanpage.call_count == 2
+        # Verify per-fanpage content
+        calls = mock_fb.publish_on_fanpage.call_args_list
+        assert calls[0].args[1] == "Post 1"
+        assert calls[1].args[1] == "Post 2"
+
+    async def test_per_fanpage_content_fallback(self):
+        mock_fb = AsyncMock()
+        mock_fb.publish_on_fanpage = AsyncMock(return_value=True)
+        ctx = FakeContext(fb_actions=mock_fb)
+        ctx.variables["test_mode"] = True
+        node = get_node("post_fanpage")
+
+        result = await node.execute(ctx, {
+            "fanpages": [
+                {"url": "https://facebook.com/page1", "content": "Custom"},
+                {"url": "https://facebook.com/page2", "content": ""},
+            ],
+            "default_content": "Default text",
+        })
+        assert result["completed"] == 2
+        calls = mock_fb.publish_on_fanpage.call_args_list
+        assert calls[0].args[1] == "Custom"
+        assert calls[1].args[1] == "Default text"
+
+    async def test_recurring_schedule_filter(self):
+        mock_fb = AsyncMock()
+        mock_fb.publish_on_fanpage = AsyncMock(return_value=True)
+        ctx = FakeContext(fb_actions=mock_fb)
+        # NOT test mode — schedule filter active
+        node = get_node("post_fanpage")
+
+        from datetime import datetime
+        today = datetime.now().weekday()  # 0=Mon..6=Sun
+        other_day = (today + 1) % 7  # A day that is NOT today
+
+        result = await node.execute(ctx, {
+            "fanpages": [
+                {"url": "https://facebook.com/page1", "content": "Active", "recurring": True, "recurring_days": [today], "recurring_time": "00:00"},
+                {"url": "https://facebook.com/page2", "content": "Skipped", "recurring": True, "recurring_days": [other_day], "recurring_time": "00:00"},
+            ],
+        })
+        assert result["active"] == 1
+        assert result["skipped"] == 1
+        assert result["completed"] == 1
+        assert mock_fb.publish_on_fanpage.call_count == 1
+
+    async def test_test_mode_skips_schedule(self):
+        mock_fb = AsyncMock()
+        mock_fb.publish_on_fanpage = AsyncMock(return_value=True)
+        ctx = FakeContext(fb_actions=mock_fb)
+        ctx.variables["test_mode"] = True
+        node = get_node("post_fanpage")
+
+        from datetime import datetime
+        other_day = (datetime.now().weekday() + 1) % 7
+
+        result = await node.execute(ctx, {
+            "fanpages": [
+                {"url": "url1", "content": "A", "recurring": True, "recurring_days": [other_day]},
+            ],
+        })
+        # In test mode, all fanpages are active regardless of schedule
+        assert result["active"] == 1
+        assert result["completed"] == 1
+
+    async def test_per_fanpage_media_and_bg(self):
+        mock_fb = AsyncMock()
+        mock_fb.publish_on_fanpage = AsyncMock(return_value=True)
+        ctx = FakeContext(fb_actions=mock_fb)
+        ctx.variables["test_mode"] = True
+        node = get_node("post_fanpage")
+
+        result = await node.execute(ctx, {
+            "fanpages": [
+                {"url": "url1", "content": "A", "background_style": "red", "media_files": []},
+                {"url": "url2", "content": "B", "media_files": ["photo.jpg"]},
+            ],
+        })
+        assert result["completed"] == 2
+        calls = mock_fb.publish_on_fanpage.call_args_list
+        assert calls[0].kwargs["background_style"] == "red"
+        assert calls[1].kwargs["media_urls"] == ["photo.jpg"]
+
+    async def test_skipped_result_when_no_active(self):
+        mock_fb = AsyncMock()
+        mock_fb.publish_on_fanpage = AsyncMock(return_value=True)
+        ctx = FakeContext(fb_actions=mock_fb)
+        node = get_node("post_fanpage")
+
+        from datetime import datetime
+        other_day = (datetime.now().weekday() + 1) % 7
+
+        result = await node.execute(ctx, {
+            "fanpages": [
+                {"url": "url1", "content": "A", "recurring": True, "recurring_days": [other_day]},
+                {"url": "url2", "content": "B", "recurring": True, "recurring_days": [other_day]},
+            ],
+        })
+        assert result["active"] == 0
+        assert result["skipped"] == 2
+        assert result["completed"] == 0
+        assert mock_fb.publish_on_fanpage.call_count == 0
+        assert ctx.variables["last_publish_result"] == "skipped"
+
+    async def test_backward_compat_fanpage_urls(self):
+        """Old config with fanpage_urls list should still work."""
+        mock_fb = AsyncMock()
+        mock_fb.publish_on_fanpage = AsyncMock(return_value=True)
+        ctx = FakeContext(fb_actions=mock_fb)
+        ctx.variables["test_mode"] = True
+        node = get_node("post_fanpage")
+
+        result = await node.execute(ctx, {
+            "fanpage_urls": ["url1", "url2"],
+            "content": "Old format",
+        })
+        assert result["total"] == 2
+        assert result["completed"] == 2
+
+    async def test_backward_compat_single_url(self):
+        """Old config with single fanpage_url should still work."""
+        mock_fb = AsyncMock()
+        mock_fb.publish_on_fanpage = AsyncMock(return_value=True)
+        ctx = FakeContext(fb_actions=mock_fb)
+        ctx.variables["test_mode"] = True
+        node = get_node("post_fanpage")
+
+        result = await node.execute(ctx, {
+            "fanpage_url": "https://facebook.com/page1",
+            "content": "Old format",
+        })
+        assert result["success"] is True
+        assert result["fanpage_url"] == "https://facebook.com/page1"
+
+    def test_validate_config_new_format(self):
+        node = get_node("post_fanpage")
+        errors = node.validate_config({
+            "fanpages": [{"url": "url1", "content": "Hello"}],
+        })
+        assert errors == []
+
+    def test_validate_config_empty(self):
+        node = get_node("post_fanpage")
+        errors = node.validate_config({})
+        assert len(errors) >= 1
 
 
 class TestPostGroupNodePerGroupFanpage:

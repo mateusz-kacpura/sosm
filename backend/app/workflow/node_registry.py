@@ -289,64 +289,144 @@ class PostGroupNode(BaseNode):
 
 class PostFanpageNode(BaseNode):
     node_type = "post_fanpage"
-    label = "Post na fanpage"
+    label = "Posty na fanpage'ach"
     category = "facebook"
 
     async def execute(self, context: "ExecutionContext", config: dict) -> dict:
-        content = _resolve_var(config.get("content", ""), context.variables)
-        background_style = config.get("background_style") or None
-        media_files = config.get("media_files") or []
+        test_mode = context.variables.get("test_mode", False)
+        fanpages = config.get("fanpages", [])
+        default_content = _resolve_var(
+            config.get("default_content", "") or config.get("content", ""),
+            context.variables,
+        )
 
         if not context.fb_actions:
             raise NodeExecutionError("No browser session")
 
-        # Support multiple fanpages (fanpage_urls list) with fallback to single fanpage_url
-        urls = config.get("fanpage_urls") or []
-        if not urls:
-            single = _resolve_var(config.get("fanpage_url", ""), context.variables)
-            if single:
-                urls = [single]
+        # Backward compat: old-style fanpage_urls / fanpage_url
+        if not fanpages:
+            urls = config.get("fanpage_urls") or []
+            if not urls:
+                single = _resolve_var(config.get("fanpage_url", ""), context.variables)
+                if single:
+                    urls = [single]
+            if urls:
+                old_bg = config.get("background_style") or None
+                old_media = config.get("media_files") or []
+                fanpages = [{"url": u, "content": "", "background_style": old_bg or "", "media_files": old_media} for u in urls]
 
-        if not urls:
-            raise NodeExecutionError("Brak URL fanpage — skonfiguruj przynajmniej jeden")
+        if not fanpages:
+            raise NodeExecutionError("Brak fanpage'y — skonfiguruj przynajmniej jeden")
 
-        logger.info("PostFanpage: %d fanpage(y), tresc=%d znakow, bg=%s, media=%d",
-                    len(urls), len(content), background_style or "brak", len(media_files))
+        logger.info("PostFanpage: %d fanpage(y), tresc=%d znakow, test=%s",
+                    len(fanpages), len(default_content), test_mode)
+
+        # Filter by recurring schedule
+        if test_mode:
+            active_fanpages = fanpages
+            logger.info("Test mode — skipping schedule filter, all %d fanpages active", len(fanpages))
+        else:
+            active_fanpages = _filter_scheduled_groups(fanpages)
 
         results = []
         completed = 0
-        for i, url in enumerate(urls):
-            url = _resolve_var(url, context.variables)
-            logger.info("Fanpage %d/%d: %s", i + 1, len(urls), url)
+        failed = 0
+
+        for i, fp in enumerate(active_fanpages):
+            url = _resolve_var(fp.get("url", ""), context.variables)
+            if not url:
+                continue
+
+            # Per-fanpage content with fallback to default
+            fp_content = fp.get("content", "")
+            content = _resolve_var(fp_content, context.variables) if fp_content else default_content
+
+            # Wait until planned time if set (one-shot schedule)
+            if not test_mode:
+                planned_date = fp.get("planned_date", "")
+                planned_time = fp.get("planned_time", "")
+                if planned_date and planned_time:
+                    await _wait_until_planned(planned_date, planned_time)
+
+            # For recurring fanpages, wait until recurring_time today (with jitter)
+            if not test_mode and fp.get("recurring") and fp.get("recurring_time"):
+                jitter_minutes = fp.get("recurring_jitter", 0)
+                await _wait_until_recurring_time(fp["recurring_time"], jitter_minutes)
+
+            # Per-fanpage background and media
+            fp_bg = fp.get("background_style") or None
+            fp_media = fp.get("media_files") or config.get("default_media_files") or []
+
             try:
+                logger.info(
+                    "Fanpage %d/%d: %s (bg=%s, media=%d)",
+                    i + 1, len(active_fanpages), url,
+                    fp_bg or "brak", len(fp_media),
+                )
                 success = await context.fb_actions.publish_on_fanpage(
                     url, content,
-                    background_style=background_style,
-                    media_urls=media_files or None,
+                    background_style=fp_bg,
+                    media_urls=fp_media or None,
                 )
-                results.append({"fanpage_url": url, "success": success})
+                results.append({
+                    "fanpage_url": url, "success": success,
+                    "recurring": fp.get("recurring", False),
+                })
                 if success:
                     completed += 1
-                    logger.info("Fanpage %d/%d: OPUBLIKOWANO", i + 1, len(urls))
+                    logger.info("Fanpage %d/%d: OPUBLIKOWANO", i + 1, len(active_fanpages))
                 else:
-                    logger.warning("Fanpage %d/%d: NIEPOWODZENIE", i + 1, len(urls))
+                    failed += 1
+                    logger.warning("Fanpage %d/%d: NIEPOWODZENIE", i + 1, len(active_fanpages))
             except Exception as exc:
-                logger.error("Fanpage %d/%d (%s) blad: %s", i + 1, len(urls), url, exc)
+                logger.error("Fanpage %d/%d (%s) blad: %s", i + 1, len(active_fanpages), url, exc)
                 results.append({"fanpage_url": url, "success": False, "error": str(exc)})
+                failed += 1
 
-        # For single-fanpage backward compat, keep "success" key
-        if len(urls) == 1:
-            return {"success": results[0]["success"], "fanpage_url": urls[0]}
-        return {"results": results, "completed": completed, "failed": len(urls) - completed, "total": len(urls)}
+            # Brief pause between fanpages to avoid rate limiting
+            if i < len(active_fanpages) - 1:
+                delay = random.uniform(5, 10) if test_mode else random.uniform(3, 8)
+                logger.info("Pausing %.1fs between fanpage posts", delay)
+                await asyncio.sleep(delay)
+
+        skipped = len(fanpages) - len(active_fanpages)
+
+        if len(active_fanpages) == 0:
+            logger.info("No fanpages active today (all %d skipped by schedule)", len(fanpages))
+            context.variables["last_publish_result"] = "skipped"
+            return {
+                "total": len(fanpages), "active": 0,
+                "completed": 0, "failed": 0, "skipped": skipped,
+                "results": [],
+            }
+
+        context.variables["last_publish_result"] = (
+            "success" if failed == 0 else "partial" if completed > 0 else "failed"
+        )
+
+        # Backward compat for single-URL old config
+        if len(fanpages) == 1 and not config.get("fanpages"):
+            return {"success": results[0]["success"], "fanpage_url": results[0]["fanpage_url"]}
+
+        return {
+            "total": len(fanpages), "active": len(active_fanpages),
+            "completed": completed, "failed": failed, "skipped": skipped,
+            "results": results,
+        }
 
     def validate_config(self, config: dict) -> list[str]:
         errors = []
+        fanpages = config.get("fanpages", [])
         has_urls = bool(config.get("fanpage_urls"))
         has_single = bool(config.get("fanpage_url"))
-        if not has_urls and not has_single:
-            errors.append("URL fanpage jest wymagany")
-        if not config.get("content"):
-            errors.append("Treść posta jest wymagana")
+        if not fanpages and not has_urls and not has_single:
+            errors.append("Dodaj przynajmniej jeden fanpage")
+        has_any_content = (
+            config.get("default_content") or config.get("content")
+            or any(fp.get("content") for fp in fanpages)
+        )
+        if not has_any_content:
+            errors.append("Treść posta jest wymagana (domyślna lub per fanpage)")
         return errors
 
 

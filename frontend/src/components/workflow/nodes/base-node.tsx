@@ -208,10 +208,19 @@ PostGroupNode.displayName = "PostGroupNode"
 
 export const PostFanpageNode = memo(({ data, selected }: NodeProps) => {
   const d = data as WorkflowNodeData
+  const fpCount = d.config?.fanpages?.length
+                  || d.config?.fanpage_urls?.length
+                  || (d.config?.fanpage_url ? 1 : 0)
+  const displayContent = d.config?.default_content || d.config?.content || ""
   return (
     <BaseNodeInner nodeType="post_fanpage" data={d} selected={!!selected}>
-      {d.config?.fanpage_url && (
-        <div className="truncate">{d.config.fanpage_url}</div>
+      {fpCount > 0 && (
+        <div>{fpCount} fanpage{fpCount !== 1 ? "'y" : ""}</div>
+      )}
+      {displayContent && (
+        <div className="truncate mt-0.5 italic">
+          {displayContent.slice(0, 40)}{displayContent.length > 40 ? "..." : ""}
+        </div>
       )}
     </BaseNodeInner>
   )

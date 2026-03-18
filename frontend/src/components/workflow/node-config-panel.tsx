@@ -8,6 +8,7 @@ import { X, Calendar, FileText, ImagePlus, Film } from "lucide-react"
 import type { Node } from "@xyflow/react"
 import type { WorkflowNodeData } from "./nodes/base-node"
 import { GroupScheduleModal, type PostGroupsConfig } from "./group-schedule-modal"
+import { FanpageScheduleModal, type PostFanpagesConfig } from "./fanpage-schedule-modal"
 import { FB_BACKGROUNDS } from "@/app/campaigns/spreadsheet"
 import { api, uploadMedia } from "@/lib/api"
 
@@ -22,6 +23,7 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
   const [config, setConfig] = useState<Record<string, any>>({})
   const [label, setLabel] = useState("")
   const [showScheduleModal, setShowScheduleModal] = useState(false)
+  const [showFanpageScheduleModal, setShowFanpageScheduleModal] = useState(false)
   const [mediaUploading, setMediaUploading] = useState(false)
 
   useEffect(() => {
@@ -204,134 +206,83 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
           </>
         )}
 
-        {/* Post on Fanpage */}
+        {/* Post on Fanpage (with schedule) */}
         {type === "post_fanpage" && (() => {
-          const allFanpages = accounts.flatMap((acc) => (acc.fanpages || []).map((fp) => ({ ...fp, accountEmail: acc.fb_email })))
-          const selectedUrls: string[] = config.fanpage_urls || (config.fanpage_url ? [config.fanpage_url] : [])
-          const toggleFanpage = (url: string) => {
-            const next = selectedUrls.includes(url) ? selectedUrls.filter((u: string) => u !== url) : [...selectedUrls, url]
-            updateField("fanpage_urls", next)
-            updateField("fanpage_url", next.length === 1 ? next[0] : "")
-          }
+          const fpCount = config.fanpages?.length || config.fanpage_urls?.length || (config.fanpage_url ? 1 : 0)
+          const recurringFp = (config.fanpages || []).filter((f: any) => f.recurring).length
           return <>
-            <div className="space-y-1.5">
-              <Label className="text-xs">Fanpage&apos;e</Label>
-              {allFanpages.length > 0 ? (
-                <div className="space-y-1">
-                  {allFanpages.map((fp) => (
-                    <label key={fp.id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-secondary/50 rounded px-1 py-0.5">
-                      <input
-                        type="checkbox"
-                        className="rounded"
-                        checked={selectedUrls.includes(fp.fanpage_url)}
-                        onChange={() => toggleFanpage(fp.fanpage_url)}
-                      />
-                      <span className="truncate">{fp.fanpage_name || fp.fanpage_url.replace(/https?:\/\/(www\.)?facebook\.com\//, "")}</span>
-                    </label>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-[10px] text-muted-foreground">Brak fanpage&apos;y — dodaj je w zakładce Konta</p>
-              )}
-              <div className="pt-1">
-                <Label className="text-[10px] text-muted-foreground">lub wpisz URL ręcznie</Label>
-                <Input
-                  value={!config.fanpage_urls?.length ? (config.fanpage_url || "") : ""}
-                  onChange={(e) => { updateField("fanpage_url", e.target.value); updateField("fanpage_urls", []) }}
-                  placeholder="https://facebook.com/..."
-                  className="h-7 text-xs mt-0.5"
-                  disabled={selectedUrls.length > 0 && !!config.fanpage_urls?.length}
-                />
+            <div className="space-y-2 border border-primary/10 rounded-lg p-2.5 bg-secondary/30">
+              <div className="flex items-center gap-2 text-xs">
+                <Calendar className="h-3.5 w-3.5 text-primary" />
+                <span className="font-medium">
+                  {fpCount}{" "}
+                  {fpCount === 1 ? "fanpage" : fpCount < 5 ? "fanpage'e" : "fanpage'y"}
+                </span>
+                {recurringFp > 0 && (
+                  <span className="text-primary text-[10px]">
+                    · {recurringFp} cyklicznych
+                  </span>
+                )}
               </div>
-              {selectedUrls.length > 0 && (
-                <p className="text-[10px] text-primary">{selectedUrls.length} {selectedUrls.length === 1 ? "fanpage" : "fanpage'y"} wybrane</p>
+              {(config.default_content || config.content) && (
+                <div className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <FileText className="h-3 w-3 mt-0.5 shrink-0" />
+                  <span className="truncate">{(config.default_content || config.content || "").slice(0, 60)}{(config.default_content || config.content || "").length > 60 ? "..." : ""}</span>
+                </div>
+              )}
+              {(config.fanpages || []).some((f: any) => f.background_style) && (
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <span>🎨</span>
+                  <span>{(config.fanpages || []).filter((f: any) => f.background_style).length} z tłem</span>
+                </div>
+              )}
+              {(config.default_media_files?.length > 0) && (
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <ImagePlus className="h-3 w-3" />
+                  <span>{config.default_media_files.length} {config.default_media_files.length === 1 ? "plik" : "plików"} media</span>
+                </div>
               )}
             </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Treść posta</Label>
-              <textarea
-                value={config.content || ""}
-                onChange={(e) => updateField("content", e.target.value)}
-                className="w-full rounded-md border border-input bg-secondary/50 px-2 py-1.5 text-xs min-h-[60px] resize-y"
+
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-full"
+              onClick={() => setShowFanpageScheduleModal(true)}
+            >
+              <Calendar className="h-3.5 w-3.5 mr-1.5" />
+              Otwórz harmonogram
+            </Button>
+
+            {showFanpageScheduleModal && (
+              <FanpageScheduleModal
+                config={{
+                  fanpages: config.fanpages || [],
+                  default_content: config.default_content || config.content || "",
+                  background_style: config.background_style || "",
+                  active_hours_start: config.active_hours_start || "08:00",
+                  active_hours_end: config.active_hours_end || "20:00",
+                  spread_minutes: config.spread_minutes || 15,
+                  default_media_files: config.default_media_files || [],
+                }}
+                onSave={(newConfig: PostFanpagesConfig) => {
+                  const merged = {
+                    ...config,
+                    fanpages: newConfig.fanpages,
+                    default_content: newConfig.default_content,
+                    background_style: newConfig.background_style,
+                    active_hours_start: newConfig.active_hours_start,
+                    active_hours_end: newConfig.active_hours_end,
+                    spread_minutes: newConfig.spread_minutes,
+                    default_media_files: newConfig.default_media_files,
+                  }
+                  setConfig(merged)
+                  if (node) onUpdate(node.id, { config: merged })
+                }}
+                onClose={() => setShowFanpageScheduleModal(false)}
+                accounts={accounts}
               />
-              {config.background_style && (
-                <p className="text-[10px] text-muted-foreground">Maks. 100 znaków z tłem</p>
-              )}
-            </div>
-            {/* Media upload */}
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <Label className="text-xs flex items-center gap-1">
-                  <ImagePlus className="h-3 w-3 text-primary" />
-                  Media
-                </Label>
-                <label className={`text-[10px] cursor-pointer ${mediaUploading ? "text-muted-foreground" : "text-primary hover:text-primary/80"}`}>
-                  <input
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime"
-                    multiple
-                    onChange={handleFanpageMedia}
-                    disabled={mediaUploading}
-                    className="hidden"
-                  />
-                  {mediaUploading ? "..." : "+ Dodaj"}
-                </label>
-              </div>
-              {(config.media_files?.length > 0) && (
-                <div className="flex flex-wrap gap-1.5">
-                  {(config.media_files || []).map((filename: string) => {
-                    const isVideo = filename.endsWith(".mp4") || filename.endsWith(".mov")
-                    return (
-                      <div key={filename} className="relative group">
-                        <div className="h-12 w-12 rounded border border-primary/10 bg-secondary/50 flex items-center justify-center overflow-hidden">
-                          {isVideo ? (
-                            <Film className="h-4 w-4 text-muted-foreground" />
-                          ) : (
-                            <ImagePlus className="h-4 w-4 text-muted-foreground" />
-                          )}
-                        </div>
-                        <button
-                          onClick={() => removeFanpageMedia(filename)}
-                          className="absolute -top-1 -right-1 h-3.5 w-3.5 rounded-full bg-rose-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <X className="h-2 w-2" />
-                        </button>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-              {(config.media_files?.length > 0) && (
-                <p className="text-[9px] text-muted-foreground">Media i tło się wykluczają</p>
-              )}
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Tło posta</Label>
-              <div className="flex flex-wrap gap-1.5">
-                <button
-                  onClick={() => updateField("background_style", "")}
-                  className={`h-7 w-7 rounded-md border text-[10px] ${
-                    !config.background_style ? "border-primary ring-2 ring-primary/30" : "border-primary/10"
-                  } bg-secondary/50`}
-                  title="Brak tła"
-                >
-                  ∅
-                </button>
-                {FB_BACKGROUNDS.map((bg) => (
-                  <button
-                    key={bg.id}
-                    onClick={() => updateField("background_style", bg.id)}
-                    className={`h-7 w-7 rounded-md border ${
-                      config.background_style === bg.id
-                        ? "border-primary ring-2 ring-primary/30 scale-110"
-                        : "border-primary/10"
-                    }`}
-                    style={{ backgroundColor: bg.color }}
-                    title={bg.label}
-                  />
-                ))}
-              </div>
-            </div>
+            )}
           </>
         })()}
 
