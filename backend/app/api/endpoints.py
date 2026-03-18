@@ -30,7 +30,7 @@ async def create_account(account: AccountCreate, db: AsyncSession = Depends(get_
     db_account = Account(**data)
     db.add(db_account)
     await db.commit()
-    await db.refresh(db_account)
+    await db.refresh(db_account, ["fanpages"])
     return db_account
 
 @router.get("/accounts/", response_model=List[AccountResponse])

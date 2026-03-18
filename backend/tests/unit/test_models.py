@@ -1,9 +1,10 @@
 import pytest
 from sqlalchemy import select
 
-from app.models.models import Account, Campaign, Group, TaskLog
+from app.models.models import Account, Fanpage, Campaign, Group, TaskLog
 from tests.factories import (
     AccountFactory,
+    FanpageFactory,
     CampaignFactory,
     GroupFactory,
     TaskLogFactory,
@@ -34,6 +35,70 @@ class TestAccountModel:
 
         await db_session.refresh(account, ["campaigns"])
         assert len(account.campaigns) == 1
+
+
+class TestFanpageModel:
+    async def test_fanpage_creation(self, db_session):
+        account = AccountFactory.create()
+        db_session.add(account)
+        await db_session.flush()
+
+        fanpage = FanpageFactory.create(account_id=account.id)
+        db_session.add(fanpage)
+        await db_session.flush()
+
+        result = await db_session.execute(
+            select(Fanpage).where(Fanpage.id == fanpage.id)
+        )
+        fetched = result.scalars().first()
+        assert fetched is not None
+        assert "facebook.com" in fetched.fanpage_url
+        assert fetched.account_id == account.id
+
+    async def test_fanpage_optional_name(self, db_session):
+        account = AccountFactory.create()
+        db_session.add(account)
+        await db_session.flush()
+
+        fanpage = FanpageFactory.create(account_id=account.id, fanpage_name=None)
+        db_session.add(fanpage)
+        await db_session.flush()
+
+        assert fanpage.fanpage_name is None
+
+    async def test_account_fanpages_relationship(self, db_session):
+        account = AccountFactory.create()
+        db_session.add(account)
+        await db_session.flush()
+
+        for i in range(3):
+            fp = FanpageFactory.create(
+                account_id=account.id,
+                fanpage_url=f"https://facebook.com/fanpage{i}",
+            )
+            db_session.add(fp)
+        await db_session.flush()
+
+        await db_session.refresh(account, ["fanpages"])
+        assert len(account.fanpages) == 3
+
+    async def test_fanpage_cascade_delete(self, db_session):
+        account = AccountFactory.create()
+        db_session.add(account)
+        await db_session.flush()
+
+        fanpage = FanpageFactory.create(account_id=account.id)
+        db_session.add(fanpage)
+        await db_session.flush()
+
+        fanpage_id = fanpage.id
+        await db_session.delete(account)
+        await db_session.flush()
+
+        result = await db_session.execute(
+            select(Fanpage).where(Fanpage.id == fanpage_id)
+        )
+        assert result.scalars().first() is None
 
 
 class TestCampaignModel:

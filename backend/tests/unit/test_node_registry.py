@@ -15,6 +15,7 @@ from app.workflow.node_registry import (
     MergeNode,
     VariableNode,
     PostGroupNode,
+    PostFanpageNode,
     LoginNode,
     WebhookNode,
 )
@@ -439,3 +440,231 @@ class TestLoginNode:
         assert result["success"] is False
         assert result["login_result"] == "checkpoint"
         assert ctx.variables["login_result"] == "checkpoint"
+
+
+class TestPostFanpageNodeMultiUrl:
+    """Tests for PostFanpageNode multi-fanpage iteration."""
+
+    async def test_single_url_backward_compat(self):
+        mock_fb = AsyncMock()
+        mock_fb.publish_on_fanpage = AsyncMock(return_value=True)
+        ctx = FakeContext(fb_actions=mock_fb)
+        node = get_node("post_fanpage")
+
+        result = await node.execute(ctx, {
+            "fanpage_url": "https://facebook.com/page1",
+            "content": "Hello",
+        })
+        assert result["success"] is True
+        assert result["fanpage_url"] == "https://facebook.com/page1"
+        mock_fb.publish_on_fanpage.assert_called_once()
+
+    async def test_multiple_urls(self):
+        mock_fb = AsyncMock()
+        mock_fb.publish_on_fanpage = AsyncMock(return_value=True)
+        ctx = FakeContext(fb_actions=mock_fb)
+        node = get_node("post_fanpage")
+
+        result = await node.execute(ctx, {
+            "fanpage_urls": [
+                "https://facebook.com/page1",
+                "https://facebook.com/page2",
+                "https://facebook.com/page3",
+            ],
+            "content": "Multi post",
+        })
+        assert result["total"] == 3
+        assert result["completed"] == 3
+        assert result["failed"] == 0
+        assert len(result["results"]) == 3
+        assert mock_fb.publish_on_fanpage.call_count == 3
+
+    async def test_multiple_urls_partial_failure(self):
+        mock_fb = AsyncMock()
+        mock_fb.publish_on_fanpage = AsyncMock(side_effect=[True, False, True])
+        ctx = FakeContext(fb_actions=mock_fb)
+        node = get_node("post_fanpage")
+
+        result = await node.execute(ctx, {
+            "fanpage_urls": ["url1", "url2", "url3"],
+            "content": "Test",
+        })
+        assert result["completed"] == 2
+        assert result["failed"] == 1
+
+    async def test_multiple_urls_with_exception(self):
+        mock_fb = AsyncMock()
+        mock_fb.publish_on_fanpage = AsyncMock(
+            side_effect=[True, Exception("Network error"), True]
+        )
+        ctx = FakeContext(fb_actions=mock_fb)
+        node = get_node("post_fanpage")
+
+        result = await node.execute(ctx, {
+            "fanpage_urls": ["url1", "url2", "url3"],
+            "content": "Test",
+        })
+        assert result["completed"] == 2
+        assert result["failed"] == 1
+        assert result["results"][1]["error"] == "Network error"
+
+    async def test_fanpage_urls_takes_priority_over_single(self):
+        mock_fb = AsyncMock()
+        mock_fb.publish_on_fanpage = AsyncMock(return_value=True)
+        ctx = FakeContext(fb_actions=mock_fb)
+        node = get_node("post_fanpage")
+
+        result = await node.execute(ctx, {
+            "fanpage_url": "https://facebook.com/ignored",
+            "fanpage_urls": ["https://facebook.com/used1", "https://facebook.com/used2"],
+            "content": "Test",
+        })
+        assert result["total"] == 2
+        calls = [c.args[0] for c in mock_fb.publish_on_fanpage.call_args_list]
+        assert "https://facebook.com/ignored" not in calls
+
+    async def test_no_urls_raises(self):
+        mock_fb = AsyncMock()
+        ctx = FakeContext(fb_actions=mock_fb)
+        node = get_node("post_fanpage")
+
+        with pytest.raises(NodeExecutionError, match="Brak URL fanpage"):
+            await node.execute(ctx, {"content": "Test"})
+
+    async def test_no_session_raises(self):
+        ctx = FakeContext(fb_actions=None)
+        node = get_node("post_fanpage")
+
+        with pytest.raises(NodeExecutionError, match="No browser session"):
+            await node.execute(ctx, {"fanpage_url": "url", "content": "text"})
+
+    def test_validate_config_fanpage_urls(self):
+        node = get_node("post_fanpage")
+        errors = node.validate_config({
+            "fanpage_urls": ["https://facebook.com/page1"],
+            "content": "Hello",
+        })
+        assert errors == []
+
+    def test_validate_config_no_url(self):
+        node = get_node("post_fanpage")
+        errors = node.validate_config({"content": "Hello"})
+        assert any("URL" in e for e in errors)
+
+    def test_validate_config_no_content(self):
+        node = get_node("post_fanpage")
+        errors = node.validate_config({"fanpage_url": "https://facebook.com/page1"})
+        assert any("Treść" in e.lower() or "treść" in e.lower() or "treś" in e for e in errors)
+
+
+class TestPostGroupNodePerGroupFanpage:
+    """Tests for PostGroupNode per-group fanpage override."""
+
+    async def test_global_fanpage_no_per_group(self):
+        mock_fb = AsyncMock()
+        mock_fb.switch_to_page_profile = AsyncMock(return_value=True)
+        mock_fb.verify_identity_as_fanpage = AsyncMock(return_value=True)
+        mock_fb.publish_in_group = AsyncMock(return_value=True)
+        mock_fb._current_page_name = None
+        mock_fb.switch_to_personal_profile = AsyncMock()
+        ctx = FakeContext(fb_actions=mock_fb, variables={"test_mode": True})
+        node = get_node("post_group")
+
+        result = await node.execute(ctx, {
+            "groups": [
+                {"url": "https://fb.com/groups/1"},
+                {"url": "https://fb.com/groups/2"},
+            ],
+            "default_content": "Hello",
+            "publish_as_fanpage": "https://facebook.com/myfanpage",
+        })
+        # Switch happens once before loop (no per-group overrides)
+        mock_fb.switch_to_page_profile.assert_called_once_with("https://facebook.com/myfanpage")
+        assert result["completed"] == 2
+
+    async def test_per_group_fanpage_override(self):
+        mock_fb = AsyncMock()
+        mock_fb.switch_to_page_profile = AsyncMock(return_value=True)
+        mock_fb.verify_identity_as_fanpage = AsyncMock(return_value=True)
+        mock_fb.verify_identity_as_personal = AsyncMock(return_value=True)
+        mock_fb.publish_in_group = AsyncMock(return_value=True)
+        mock_fb._current_page_name = None
+        mock_fb.switch_to_personal_profile = AsyncMock()
+        ctx = FakeContext(fb_actions=mock_fb, variables={"test_mode": True})
+        node = get_node("post_group")
+
+        result = await node.execute(ctx, {
+            "groups": [
+                {"url": "https://fb.com/groups/1", "fanpage_url": "https://facebook.com/fanpageA"},
+                {"url": "https://fb.com/groups/2", "fanpage_url": "https://facebook.com/fanpageB"},
+            ],
+            "default_content": "Hello",
+        })
+        # Two different fanpages = switch_to_page_profile called at least twice
+        assert mock_fb.switch_to_page_profile.call_count >= 2
+        assert result["completed"] == 2
+
+    async def test_per_group_minimizes_switches(self):
+        mock_fb = AsyncMock()
+        mock_fb.switch_to_page_profile = AsyncMock(return_value=True)
+        mock_fb.verify_identity_as_fanpage = AsyncMock(return_value=True)
+        mock_fb.verify_identity_as_personal = AsyncMock(return_value=True)
+        mock_fb.publish_in_group = AsyncMock(return_value=True)
+        mock_fb._current_page_name = None
+        mock_fb.switch_to_personal_profile = AsyncMock()
+        ctx = FakeContext(fb_actions=mock_fb, variables={"test_mode": True})
+        node = get_node("post_group")
+
+        result = await node.execute(ctx, {
+            "groups": [
+                {"url": "https://fb.com/groups/1", "fanpage_url": "https://facebook.com/fpA"},
+                {"url": "https://fb.com/groups/2", "fanpage_url": "https://facebook.com/fpA"},
+                {"url": "https://fb.com/groups/3", "fanpage_url": "https://facebook.com/fpB"},
+            ],
+            "default_content": "Hello",
+        })
+        # Groups 1 and 2 share fpA — only 1 switch needed. Group 3 switches to fpB.
+        # Total: 2 switch_to_page_profile calls (fpA, then personal+fpB)
+        assert mock_fb.switch_to_page_profile.call_count == 2
+        assert result["completed"] == 3
+
+    async def test_per_group_empty_fanpage_uses_global(self):
+        mock_fb = AsyncMock()
+        mock_fb.switch_to_page_profile = AsyncMock(return_value=True)
+        mock_fb.verify_identity_as_fanpage = AsyncMock(return_value=True)
+        mock_fb.publish_in_group = AsyncMock(return_value=True)
+        mock_fb._current_page_name = None
+        mock_fb.switch_to_personal_profile = AsyncMock()
+        ctx = FakeContext(fb_actions=mock_fb, variables={"test_mode": True})
+        node = get_node("post_group")
+
+        result = await node.execute(ctx, {
+            "groups": [
+                {"url": "https://fb.com/groups/1", "fanpage_url": ""},
+                {"url": "https://fb.com/groups/2"},
+            ],
+            "default_content": "Hello",
+            "publish_as_fanpage": "https://facebook.com/globalfp",
+        })
+        # Empty/missing per-group falls back to global — only 1 switch needed
+        mock_fb.switch_to_page_profile.assert_called_once_with("https://facebook.com/globalfp")
+        assert result["completed"] == 2
+
+    async def test_switch_failure_skips_group(self):
+        mock_fb = AsyncMock()
+        mock_fb.switch_to_page_profile = AsyncMock(return_value=False)
+        mock_fb.verify_identity_as_personal = AsyncMock(return_value=True)
+        mock_fb.publish_in_group = AsyncMock(return_value=True)
+        mock_fb._current_page_name = None
+        mock_fb.switch_to_personal_profile = AsyncMock()
+        ctx = FakeContext(fb_actions=mock_fb, variables={"test_mode": True})
+        node = get_node("post_group")
+
+        result = await node.execute(ctx, {
+            "groups": [
+                {"url": "https://fb.com/groups/1", "fanpage_url": "https://facebook.com/badfp"},
+            ],
+            "default_content": "Hello",
+        })
+        assert result["failed"] == 1
+        assert result["completed"] == 0

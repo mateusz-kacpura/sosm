@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from app.models.models import Account, Campaign, Group, TaskLog, FingerprintTest
+from app.models.models import Account, Fanpage, Campaign, Group, TaskLog, FingerprintTest
 from app.models.workflow_models import Workflow, WorkflowRun, WorkflowNodeExecution
 
 
@@ -17,6 +17,20 @@ class AccountFactory:
         }
         defaults.update(overrides)
         return Account(**defaults)
+
+
+class FanpageFactory:
+    _counter = 0
+
+    @classmethod
+    def create(cls, **overrides) -> Fanpage:
+        cls._counter += 1
+        defaults = {
+            "fanpage_url": f"https://www.facebook.com/testfanpage{cls._counter}",
+            "fanpage_name": f"Test Fanpage {cls._counter}",
+        }
+        defaults.update(overrides)
+        return Fanpage(**defaults)
 
 
 class CampaignFactory:

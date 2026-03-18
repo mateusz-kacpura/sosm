@@ -4,6 +4,8 @@ from pydantic import ValidationError
 from app.models.schemas import (
     AccountCreate,
     AccountResponse,
+    FanpageCreate,
+    FanpageResponse,
     CampaignCreate,
     CampaignResponse,
     CampaignUpdate,
@@ -46,6 +48,74 @@ class TestAccountSchemas:
         resp = AccountResponse.model_validate(FakeAccount(), from_attributes=True)
         assert resp.id == 1
         assert resp.fb_email == "user@fb.com"
+
+
+class TestFanpageSchemas:
+    def test_fanpage_create_valid(self):
+        fp = FanpageCreate(
+            fanpage_url="https://facebook.com/myfanpage",
+            fanpage_name="My Fanpage",
+        )
+        assert fp.fanpage_url == "https://facebook.com/myfanpage"
+        assert fp.fanpage_name == "My Fanpage"
+
+    def test_fanpage_create_minimal(self):
+        fp = FanpageCreate(fanpage_url="https://facebook.com/page")
+        assert fp.fanpage_name is None
+
+    def test_fanpage_create_missing_url(self):
+        with pytest.raises(ValidationError):
+            FanpageCreate()
+
+    def test_fanpage_response_from_attributes(self):
+        from datetime import datetime
+
+        class FakeFanpage:
+            id = 1
+            account_id = 10
+            fanpage_url = "https://facebook.com/page1"
+            fanpage_name = "Page One"
+            created_at = datetime(2024, 1, 1)
+
+        resp = FanpageResponse.model_validate(FakeFanpage(), from_attributes=True)
+        assert resp.id == 1
+        assert resp.account_id == 10
+        assert resp.fanpage_url == "https://facebook.com/page1"
+        assert resp.fanpage_name == "Page One"
+
+    def test_account_response_includes_fanpages(self):
+        from datetime import datetime
+
+        class FakeFanpage:
+            id = 1
+            account_id = 1
+            fanpage_url = "https://facebook.com/fp"
+            fanpage_name = "FP"
+            created_at = datetime(2024, 1, 1)
+
+        class FakeAccount:
+            id = 1
+            fb_email = "user@fb.com"
+            proxy_url = None
+            browser_profile_id = None
+            created_at = datetime(2024, 1, 1)
+            fanpages = [FakeFanpage()]
+
+        resp = AccountResponse.model_validate(FakeAccount(), from_attributes=True)
+        assert len(resp.fanpages) == 1
+        assert resp.fanpages[0].fanpage_url == "https://facebook.com/fp"
+
+    def test_account_response_empty_fanpages(self):
+        class FakeAccount:
+            id = 1
+            fb_email = "user@fb.com"
+            proxy_url = None
+            browser_profile_id = None
+            created_at = "2024-01-01T00:00:00"
+            fanpages = []
+
+        resp = AccountResponse.model_validate(FakeAccount(), from_attributes=True)
+        assert resp.fanpages == []
 
 
 class TestCampaignSchemas:

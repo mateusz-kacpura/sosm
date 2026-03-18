@@ -135,4 +135,37 @@ describe("api object", () => {
       expect.anything()
     );
   });
+
+  it("accounts.fanpages.list calls correct endpoint", async () => {
+    await api.accounts.fanpages.list(5);
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/accounts/5/fanpages",
+      expect.anything()
+    );
+  });
+
+  it("accounts.fanpages.create sends POST with data", async () => {
+    await api.accounts.fanpages.create(5, {
+      fanpage_url: "https://facebook.com/page1",
+      fanpage_name: "Page 1",
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/accounts/5/fanpages",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          fanpage_url: "https://facebook.com/page1",
+          fanpage_name: "Page 1",
+        }),
+      })
+    );
+  });
+
+  it("accounts.fanpages.delete sends DELETE with ids", async () => {
+    await api.accounts.fanpages.delete(5, 10);
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/accounts/5/fanpages/10",
+      expect.objectContaining({ method: "DELETE" })
+    );
+  });
 });
