@@ -16,7 +16,7 @@ function WorkflowEditorInner() {
   const workflowId = Number(searchParams.get("id"))
 
   const [workflow, setWorkflow] = useState<any>(null)
-  const [accounts, setAccounts] = useState<{ id: number; fb_email: string }[]>([])
+  const [accounts, setAccounts] = useState<{ id: number; fb_email: string; fanpages: { id: number; fanpage_url: string; fanpage_name: string | null }[] }[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [name, setName] = useState("")

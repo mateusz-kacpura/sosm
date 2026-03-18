@@ -124,30 +124,28 @@ class PostGroupNode(BaseNode):
         if not groups:
             raise NodeExecutionError("No groups configured")
 
-        logger.info("PostGroup: %d grup, tresc=%d znakow, fanpage=%s, test=%s",
+        logger.info("PostGroup: %d grup, tresc=%d znakow, fanpage_globalny=%s, test=%s",
                     len(groups), len(default_content), publish_as_fanpage or "brak", test_mode)
 
-        # Identity switching: switch to fanpage ONCE before the loop, or verify personal
-        switched_to_fanpage = False
-        if publish_as_fanpage:
-            fanpage_url = _resolve_var(publish_as_fanpage, context.variables)
-            logger.info("Przelaczanie na profil fanpage przed postami na grupach: %s", fanpage_url)
-            switched = await context.fb_actions.switch_to_page_profile(fanpage_url)
-            if not switched:
-                raise NodeExecutionError(
-                    f"Nie udalo sie przelaczac na fanpage: {fanpage_url}"
-                )
-            switched_to_fanpage = True
-            if not await context.fb_actions.verify_identity_as_fanpage():
-                raise NodeExecutionError(
-                    "Weryfikacja tozsamosci nieudana — profil osobisty aktywny zamiast fanpage"
-                )
+        # Resolve global fanpage URL (backward compat: single fanpage for all groups)
+        global_fanpage = _resolve_var(publish_as_fanpage, context.variables) if publish_as_fanpage else None
+
+        # Determine initial identity
+        current_fanpage = None  # None = personal profile
+        if global_fanpage:
+            # Check if any group has a per-group override — if not, switch once
+            has_per_group = any(g.get("fanpage_url") for g in groups)
+            if not has_per_group:
+                logger.info("Przelaczanie na profil fanpage przed postami na grupach: %s", global_fanpage)
+                switched = await context.fb_actions.switch_to_page_profile(global_fanpage)
+                if not switched:
+                    raise NodeExecutionError(f"Nie udalo sie przelaczac na fanpage: {global_fanpage}")
+                current_fanpage = global_fanpage
+                if not await context.fb_actions.verify_identity_as_fanpage():
+                    raise NodeExecutionError("Weryfikacja tozsamosci nieudana — profil osobisty aktywny zamiast fanpage")
         else:
-            # No fanpage selected — verify we ARE personal (catch leftover switches)
             if not await context.fb_actions.verify_identity_as_personal():
-                raise NodeExecutionError(
-                    "Wykryto aktywny profil fanpage zamiast osobistego — przerywam"
-                )
+                raise NodeExecutionError("Wykryto aktywny profil fanpage zamiast osobistego — przerywam")
 
         try:
             # Filter groups by recurring schedule — skip if today is not a scheduled day
@@ -166,6 +164,26 @@ class PostGroupNode(BaseNode):
                 url = _resolve_var(group.get("url", ""), context.variables)
                 if not url:
                     continue
+
+                # Per-group fanpage override (empty or missing = use global)
+                group_fanpage_raw = group.get("fanpage_url") or None
+                desired_fanpage = _resolve_var(group_fanpage_raw, context.variables) if group_fanpage_raw else global_fanpage
+
+                # Switch identity if needed
+                if desired_fanpage != current_fanpage:
+                    if current_fanpage:
+                        await context.fb_actions.switch_to_personal_profile()
+                        context.fb_actions._current_page_name = None
+                        logger.info("Przywrocono profil osobisty przed zmiana fanpage")
+                    if desired_fanpage:
+                        logger.info("Przelaczanie na fanpage: %s (grupa %d/%d)", desired_fanpage, i + 1, len(active_groups))
+                        switched = await context.fb_actions.switch_to_page_profile(desired_fanpage)
+                        if not switched:
+                            logger.error("Nie udalo sie przelaczac na fanpage %s — pomijam grupe %s", desired_fanpage, url)
+                            results.append({"url": url, "success": False, "error": f"Identity switch failed: {desired_fanpage}"})
+                            failed += 1
+                            continue
+                    current_fanpage = desired_fanpage
 
                 # Per-group content with fallback to default
                 group_content = group.get("content", "")
@@ -190,9 +208,10 @@ class PostGroupNode(BaseNode):
                 group_media = group.get("media_files") or config.get("default_media_files") or []
 
                 try:
-                    logger.info("Grupa %d/%d: %s (bg=%s, media=%d)",
+                    fanpage_label = f", fanpage={desired_fanpage}" if desired_fanpage else ""
+                    logger.info("Grupa %d/%d: %s (bg=%s, media=%d%s)",
                                 i + 1, len(active_groups), url,
-                                group_bg or "brak", len(group_media))
+                                group_bg or "brak", len(group_media), fanpage_label)
                     success = await context.fb_actions.publish_on_group(
                         url, content,
                         media_urls=group_media or None,
@@ -201,6 +220,7 @@ class PostGroupNode(BaseNode):
                     results.append({
                         "url": url, "success": success,
                         "recurring": group.get("recurring", False),
+                        "fanpage_url": desired_fanpage,
                     })
                     if success:
                         completed += 1
@@ -244,7 +264,7 @@ class PostGroupNode(BaseNode):
             }
 
         finally:
-            if switched_to_fanpage:
+            if current_fanpage:
                 try:
                     await context.fb_actions.switch_to_personal_profile()
                     logger.info("Przywrocono profil osobisty po postach na grupach")
@@ -273,7 +293,6 @@ class PostFanpageNode(BaseNode):
     category = "facebook"
 
     async def execute(self, context: "ExecutionContext", config: dict) -> dict:
-        fanpage_url = _resolve_var(config.get("fanpage_url", ""), context.variables)
         content = _resolve_var(config.get("content", ""), context.variables)
         background_style = config.get("background_style") or None
         media_files = config.get("media_files") or []
@@ -281,19 +300,50 @@ class PostFanpageNode(BaseNode):
         if not context.fb_actions:
             raise NodeExecutionError("No browser session")
 
-        logger.info("Publikacja na fanpage: %s (tresc: %d znakow, bg: %s, media: %d)",
-                    fanpage_url, len(content), background_style or "brak", len(media_files))
-        success = await context.fb_actions.publish_on_fanpage(
-            fanpage_url, content,
-            background_style=background_style,
-            media_urls=media_files or None,
-        )
-        logger.info("PostFanpage result: success=%s", success)
-        return {"success": success, "fanpage_url": fanpage_url}
+        # Support multiple fanpages (fanpage_urls list) with fallback to single fanpage_url
+        urls = config.get("fanpage_urls") or []
+        if not urls:
+            single = _resolve_var(config.get("fanpage_url", ""), context.variables)
+            if single:
+                urls = [single]
+
+        if not urls:
+            raise NodeExecutionError("Brak URL fanpage — skonfiguruj przynajmniej jeden")
+
+        logger.info("PostFanpage: %d fanpage(y), tresc=%d znakow, bg=%s, media=%d",
+                    len(urls), len(content), background_style or "brak", len(media_files))
+
+        results = []
+        completed = 0
+        for i, url in enumerate(urls):
+            url = _resolve_var(url, context.variables)
+            logger.info("Fanpage %d/%d: %s", i + 1, len(urls), url)
+            try:
+                success = await context.fb_actions.publish_on_fanpage(
+                    url, content,
+                    background_style=background_style,
+                    media_urls=media_files or None,
+                )
+                results.append({"fanpage_url": url, "success": success})
+                if success:
+                    completed += 1
+                    logger.info("Fanpage %d/%d: OPUBLIKOWANO", i + 1, len(urls))
+                else:
+                    logger.warning("Fanpage %d/%d: NIEPOWODZENIE", i + 1, len(urls))
+            except Exception as exc:
+                logger.error("Fanpage %d/%d (%s) blad: %s", i + 1, len(urls), url, exc)
+                results.append({"fanpage_url": url, "success": False, "error": str(exc)})
+
+        # For single-fanpage backward compat, keep "success" key
+        if len(urls) == 1:
+            return {"success": results[0]["success"], "fanpage_url": urls[0]}
+        return {"results": results, "completed": completed, "failed": len(urls) - completed, "total": len(urls)}
 
     def validate_config(self, config: dict) -> list[str]:
         errors = []
-        if not config.get("fanpage_url"):
+        has_urls = bool(config.get("fanpage_urls"))
+        has_single = bool(config.get("fanpage_url"))
+        if not has_urls and not has_single:
             errors.append("URL fanpage jest wymagany")
         if not config.get("content"):
             errors.append("Treść posta jest wymagana")

@@ -14,9 +14,24 @@ class AccountCreate(BaseModel):
     fb_password: str
     proxy_url: Optional[str] = None
 
+class FanpageCreate(BaseModel):
+    fanpage_url: str
+    fanpage_name: Optional[str] = None
+
+class FanpageResponse(BaseModel):
+    id: int
+    account_id: int
+    fanpage_url: str
+    fanpage_name: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
 class AccountResponse(AccountBase):
     id: int
     created_at: datetime
+    fanpages: list[FanpageResponse] = []
 
     class Config:
         from_attributes = True

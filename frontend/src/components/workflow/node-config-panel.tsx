@@ -13,7 +13,7 @@ import { api, uploadMedia } from "@/lib/api"
 
 interface NodeConfigPanelProps {
   node: Node<WorkflowNodeData> | null
-  accounts: { id: number; fb_email: string }[]
+  accounts: { id: number; fb_email: string; fanpages: { id: number; fanpage_url: string; fanpage_name: string | null }[] }[]
   onUpdate: (nodeId: string, data: Partial<WorkflowNodeData>) => void
   onClose: () => void
 }
@@ -137,10 +137,13 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
                   <span className="truncate">{config.default_content.slice(0, 60)}{config.default_content.length > 60 ? "..." : ""}</span>
                 </div>
               )}
-              {config.publish_as_fanpage && (
+              {(config.publish_as_fanpage || (config.groups || []).some((g: any) => g.fanpage_url)) && (
                 <div className="flex items-center gap-2 text-[11px] text-primary">
                   <span>👤</span>
-                  <span className="truncate">Jako fanpage</span>
+                  <span className="truncate">
+                    {config.publish_as_fanpage ? "Jako fanpage" : ""}
+                    {(config.groups || []).some((g: any) => g.fanpage_url) ? ` (${(config.groups || []).filter((g: any) => g.fanpage_url).length} per-group)` : ""}
+                  </span>
                 </div>
               )}
               {(config.groups || []).some((g: any) => g.background_style) && (
@@ -195,22 +198,54 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
                   if (node) onUpdate(node.id, { config: merged })
                 }}
                 onClose={() => setShowScheduleModal(false)}
+                accounts={accounts}
               />
             )}
           </>
         )}
 
         {/* Post on Fanpage */}
-        {type === "post_fanpage" && (
-          <>
-            <div className="space-y-1">
-              <Label className="text-xs">URL fanpage</Label>
-              <Input
-                value={config.fanpage_url || ""}
-                onChange={(e) => updateField("fanpage_url", e.target.value)}
-                placeholder="https://facebook.com/..."
-                className="h-8 text-xs"
-              />
+        {type === "post_fanpage" && (() => {
+          const allFanpages = accounts.flatMap((acc) => (acc.fanpages || []).map((fp) => ({ ...fp, accountEmail: acc.fb_email })))
+          const selectedUrls: string[] = config.fanpage_urls || (config.fanpage_url ? [config.fanpage_url] : [])
+          const toggleFanpage = (url: string) => {
+            const next = selectedUrls.includes(url) ? selectedUrls.filter((u: string) => u !== url) : [...selectedUrls, url]
+            updateField("fanpage_urls", next)
+            updateField("fanpage_url", next.length === 1 ? next[0] : "")
+          }
+          return <>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Fanpage&apos;e</Label>
+              {allFanpages.length > 0 ? (
+                <div className="space-y-1">
+                  {allFanpages.map((fp) => (
+                    <label key={fp.id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-secondary/50 rounded px-1 py-0.5">
+                      <input
+                        type="checkbox"
+                        className="rounded"
+                        checked={selectedUrls.includes(fp.fanpage_url)}
+                        onChange={() => toggleFanpage(fp.fanpage_url)}
+                      />
+                      <span className="truncate">{fp.fanpage_name || fp.fanpage_url.replace(/https?:\/\/(www\.)?facebook\.com\//, "")}</span>
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[10px] text-muted-foreground">Brak fanpage&apos;y — dodaj je w zakładce Konta</p>
+              )}
+              <div className="pt-1">
+                <Label className="text-[10px] text-muted-foreground">lub wpisz URL ręcznie</Label>
+                <Input
+                  value={!config.fanpage_urls?.length ? (config.fanpage_url || "") : ""}
+                  onChange={(e) => { updateField("fanpage_url", e.target.value); updateField("fanpage_urls", []) }}
+                  placeholder="https://facebook.com/..."
+                  className="h-7 text-xs mt-0.5"
+                  disabled={selectedUrls.length > 0 && !!config.fanpage_urls?.length}
+                />
+              </div>
+              {selectedUrls.length > 0 && (
+                <p className="text-[10px] text-primary">{selectedUrls.length} {selectedUrls.length === 1 ? "fanpage" : "fanpage'y"} wybrane</p>
+              )}
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Treść posta</Label>
@@ -298,7 +333,7 @@ export function NodeConfigPanel({ node, accounts, onUpdate, onClose }: NodeConfi
               </div>
             </div>
           </>
-        )}
+        })()}
 
         {/* Like Page */}
         {type === "like_page" && (

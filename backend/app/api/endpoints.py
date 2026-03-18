@@ -8,9 +8,12 @@ from typing import List
 from datetime import datetime, timezone, timedelta
 
 from app.core.database import get_db
-from app.models.models import Account, Campaign, Group, TaskLog, FingerprintTest
+from sqlalchemy.orm import selectinload
+
+from app.models.models import Account, Fanpage, Campaign, Group, TaskLog, FingerprintTest
 from app.models.schemas import (
     AccountCreate, AccountResponse,
+    FanpageCreate, FanpageResponse,
     CampaignCreate, CampaignResponse, CampaignUpdate,
     TaskLogResponse, GroupResponse, GroupUpdate, CampaignGroupsReplace,
     FingerprintTestCreate, FingerprintTestResponse, FingerprintTestSummary,
@@ -32,7 +35,7 @@ async def create_account(account: AccountCreate, db: AsyncSession = Depends(get_
 
 @router.get("/accounts/", response_model=List[AccountResponse])
 async def list_accounts(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Account))
+    result = await db.execute(select(Account).options(selectinload(Account.fanpages)))
     return result.scalars().all()
 
 @router.delete("/accounts/{account_id}")
@@ -89,6 +92,50 @@ async def create_browser_profile(account_id: int, db: AsyncSession = Depends(get
         "profile_id": profile_id,
         "account_id": account_id,
     }
+
+
+# --- Fanpages ---
+@router.get("/accounts/{account_id}/fanpages", response_model=List[FanpageResponse])
+async def list_fanpages(account_id: int, db: AsyncSession = Depends(get_db)):
+    account = await db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    result = await db.execute(
+        select(Fanpage).where(Fanpage.account_id == account_id)
+    )
+    return result.scalars().all()
+
+@router.post("/accounts/{account_id}/fanpages", response_model=FanpageResponse)
+async def add_fanpage(account_id: int, fanpage: FanpageCreate, db: AsyncSession = Depends(get_db)):
+    account = await db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    # Check for duplicate
+    existing = await db.execute(
+        select(Fanpage).where(
+            Fanpage.account_id == account_id,
+            Fanpage.fanpage_url == fanpage.fanpage_url,
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Fanpage already exists for this account")
+    db_fanpage = Fanpage(account_id=account_id, **fanpage.model_dump())
+    db.add(db_fanpage)
+    await db.commit()
+    await db.refresh(db_fanpage)
+    return db_fanpage
+
+@router.delete("/accounts/{account_id}/fanpages/{fanpage_id}")
+async def delete_fanpage(account_id: int, fanpage_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Fanpage).where(Fanpage.id == fanpage_id, Fanpage.account_id == account_id)
+    )
+    db_fanpage = result.scalar_one_or_none()
+    if not db_fanpage:
+        raise HTTPException(status_code=404, detail="Fanpage not found")
+    await db.delete(db_fanpage)
+    await db.commit()
+    return {"detail": "Fanpage deleted"}
 
 
 def _compute_interval(posts_per_day: int, hours_start: str, hours_end: str) -> int:

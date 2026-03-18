@@ -18,6 +18,19 @@ class Account(Base):
 
     campaigns = relationship("Campaign", back_populates="account")
     fingerprint_tests = relationship("FingerprintTest", back_populates="account")
+    fanpages = relationship("Fanpage", back_populates="account", cascade="all, delete-orphan")
+
+
+class Fanpage(Base):
+    __tablename__ = "fanpages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    fanpage_url = Column(String, nullable=False)
+    fanpage_name = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    account = relationship("Account", back_populates="fanpages")
 
 
 class Campaign(Base):

@@ -27,7 +27,7 @@ interface WorkflowCanvasProps {
   initialNodes: Node<WorkflowNodeData>[]
   initialEdges: Edge[]
   initialViewport?: { x: number; y: number; zoom: number }
-  accounts: { id: number; fb_email: string }[]
+  accounts: { id: number; fb_email: string; fanpages: { id: number; fanpage_url: string; fanpage_name: string | null }[] }[]
   onSave: (nodes: Node[], edges: Edge[], viewport: { x: number; y: number; zoom: number }) => void
   nodeStatuses?: Record<string, string>  // nodeId → status (for live run overlay)
 }

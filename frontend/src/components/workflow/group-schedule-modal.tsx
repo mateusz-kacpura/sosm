@@ -27,6 +27,7 @@ export interface GroupEntry {
   recurring_jitter: number  // 0-120 minutes of random deviation
   background_style: string  // per-group bg override (empty = use global)
   media_files: string[]     // uploaded filenames
+  fanpage_url: string       // per-group fanpage override (empty = use global publish_as_fanpage)
 }
 
 export interface PostGroupsConfig {
@@ -44,6 +45,7 @@ interface GroupScheduleModalProps {
   config: PostGroupsConfig
   onSave: (config: PostGroupsConfig) => void
   onClose: () => void
+  accounts?: { id: number; fb_email: string; fanpages: { id: number; fanpage_url: string; fanpage_name: string | null }[] }[]
 }
 
 function parseGroupUrls(text: string): string[] {
@@ -62,7 +64,7 @@ function pad(n: number) {
 }
 
 function makeEmptyGroup(): GroupEntry {
-  return { url: "", content: "", planned_date: "", planned_time: "", recurring: false, recurring_days: [], recurring_time: "10:00", recurring_jitter: 15, background_style: "", media_files: [] }
+  return { url: "", content: "", planned_date: "", planned_time: "", recurring: false, recurring_days: [], recurring_time: "10:00", recurring_jitter: 15, background_style: "", media_files: [], fanpage_url: "" }
 }
 
 function formatJitter(minutes: number): string {
@@ -128,6 +130,7 @@ function generateSchedule(
       recurring_jitter: 15,
       background_style: "",
       media_files: [],
+      fanpage_url: "",
     }
   })
 }
@@ -140,7 +143,7 @@ function formatRecurringDays(days: number[]): string {
   return days.map((d) => DAY_LABELS[d]).join(", ")
 }
 
-export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleModalProps) {
+export function GroupScheduleModal({ config, onSave, onClose, accounts }: GroupScheduleModalProps) {
   const [fullscreen, setFullscreen] = useState(false)
   const [groups, setGroups] = useState<GroupEntry[]>(() =>
     (config.groups || []).map((g) => ({
@@ -154,6 +157,7 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
       recurring_jitter: g.recurring_jitter ?? 15,
       background_style: g.background_style || "",
       media_files: g.media_files || [],
+      fanpage_url: g.fanpage_url || "",
     }))
   )
   const [defaultContent, setDefaultContent] = useState(config.default_content || "")
@@ -178,6 +182,14 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
 
   const spreadMin = SPREAD_STEPS[spreadIdx]
   const parsedCount = parseGroupUrls(rawText).length
+
+  // All fanpages from all accounts (for per-group selector)
+  const allFanpages = useMemo(() => {
+    if (!accounts) return []
+    return accounts.flatMap((acc) =>
+      (acc.fanpages || []).map((fp) => ({ ...fp, accountEmail: acc.fb_email }))
+    )
+  }, [accounts])
 
   // All unique uploaded files: default + per-group (for library picker)
   const allUploadedFiles = useMemo(() => {
@@ -371,18 +383,23 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
-          {/* Publish as fanpage */}
+          {/* Publish as fanpage (global default) */}
           <div className="space-y-2">
-            <label className="flex items-center gap-2 text-xs cursor-pointer">
-              <input
-                type="checkbox"
-                checked={!!publishAsFanpage}
-                onChange={(e) => setPublishAsFanpage(e.target.checked ? publishAsFanpage || "https://www.facebook.com/" : "")}
-                className="rounded"
-              />
-              Publikuj jako fanpage
-            </label>
-            {!!publishAsFanpage && (
+            <Label className="text-xs">Publikuj jako fanpage (domyślnie)</Label>
+            <select
+              value={publishAsFanpage}
+              onChange={(e) => setPublishAsFanpage(e.target.value)}
+              className="w-full h-8 rounded-md border border-primary/10 bg-secondary/50 px-2 text-xs
+                         focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+            >
+              <option value="">Profil osobisty</option>
+              {allFanpages.map((fp) => (
+                <option key={fp.id} value={fp.fanpage_url}>
+                  {fp.fanpage_name || fp.fanpage_url.replace(/https?:\/\/(www\.)?facebook\.com\//, "")}
+                </option>
+              ))}
+            </select>
+            {allFanpages.length === 0 && (
               <input
                 value={publishAsFanpage}
                 onChange={(e) => setPublishAsFanpage(e.target.value)}
@@ -578,7 +595,7 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
 
               <div className="border border-primary/10 rounded-lg overflow-hidden">
                 {/* Table header */}
-                <div className="grid grid-cols-[minmax(200px,1fr)_minmax(160px,1fr)_100px_70px_32px_32px_36px_36px] gap-px bg-primary/5 text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
+                <div className="grid grid-cols-[minmax(180px,1fr)_minmax(140px,1fr)_100px_70px_32px_32px_80px_36px_36px] gap-px bg-primary/5 text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
                   <div className="px-3 py-1.5 bg-card">URL grupy</div>
                   <div className="px-2 py-1.5 bg-card">Treść posta</div>
                   <div className="px-2 py-1.5 bg-card">Data</div>
@@ -587,6 +604,7 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
                   <div className="px-1 py-1.5 bg-card text-center" title="Media (zdjęcia/filmy)">
                     <ImagePlus className="h-3 w-3 mx-auto" />
                   </div>
+                  <div className="px-1 py-1.5 bg-card text-center" title="Fanpage (per-grupa)">FP</div>
                   <div className="px-1 py-1.5 bg-card text-center" title="Publikacja cykliczna">
                     <RefreshCw className="h-3 w-3 mx-auto" />
                   </div>
@@ -598,7 +616,7 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
                   {groups.map((g, i) => (
                     <Fragment key={i}>
                       {/* Main row */}
-                      <div className="grid grid-cols-[minmax(200px,1fr)_minmax(160px,1fr)_100px_70px_32px_32px_36px_36px] gap-px bg-primary/5 text-xs border-t border-primary/5 first:border-t-0">
+                      <div className="grid grid-cols-[minmax(180px,1fr)_minmax(140px,1fr)_100px_70px_32px_32px_80px_36px_36px] gap-px bg-primary/5 text-xs border-t border-primary/5 first:border-t-0">
                         <div className="px-2 py-1.5 bg-card">
                           <input
                             value={g.url}
@@ -665,6 +683,25 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
                               </span>
                             )}
                           </button>
+                        </div>
+                        <div className="flex items-center justify-center bg-card px-0.5">
+                          {allFanpages.length > 0 ? (
+                            <select
+                              value={g.fanpage_url || ""}
+                              onChange={(e) => updateGroup(i, { fanpage_url: e.target.value })}
+                              className="w-full h-5 rounded border border-primary/10 bg-transparent text-[9px] px-0.5 focus:outline-none"
+                              title={g.fanpage_url || "Domyślny (globalny)"}
+                            >
+                              <option value="">Dom.</option>
+                              {allFanpages.map((fp) => (
+                                <option key={fp.id} value={fp.fanpage_url}>
+                                  {(fp.fanpage_name || fp.fanpage_url.replace(/https?:\/\/(www\.)?facebook\.com\//, "")).slice(0, 12)}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="text-[8px] text-muted-foreground/40">-</span>
+                          )}
                         </div>
                         <div className="flex items-center justify-center bg-card">
                           <button
@@ -758,6 +795,7 @@ export function GroupScheduleModal({ config, onSave, onClose }: GroupScheduleMod
             {groups.length} {groups.length === 1 ? "grupa" : groups.length < 5 ? "grupy" : "grup"}
             {recurringCount > 0 ? ` · ${recurringCount} cyklicznych` : ""}
             {publishAsFanpage ? " · jako fanpage" : ""}
+            {groups.filter((g) => g.fanpage_url).length > 0 ? ` · ${groups.filter((g) => g.fanpage_url).length} per-group FP` : ""}
             {defaultContent ? ` · ${defaultContent.length} zn.` : ""}
           </span>
           <div className="flex items-center gap-2">
