@@ -13,9 +13,13 @@ authentic WebGL rendering.
 """
 
 import asyncio
+import functools
+import glob as _glob
 import json
 import logging
 import os
+import re
+import subprocess
 
 from camoufox.async_api import AsyncCamoufox
 from camoufox import DefaultAddons
@@ -147,31 +151,298 @@ _LINUX_FONTS = [
     # Ubuntu family
     "Ubuntu", "Ubuntu Mono",
     # Noto family (Google, broad coverage)
-    "Noto Sans", "Noto Serif", "Noto Sans Mono", "Noto Color Emoji",
+    "Noto Sans", "Noto Serif", "Noto Sans Mono", "Noto Mono", "Noto Color Emoji",
+    "Noto Sans CJK HK", "Noto Serif CJK JP", "Noto Serif CJK SC",
+    "Noto Sans Mono CJK SC",
     # URW/Ghostscript (metric-compatible classics)
     "Nimbus Sans", "Nimbus Roman", "Nimbus Mono PS",
     # Free fonts (GNU FreeFont project)
     "FreeSans", "FreeSerif", "FreeMono",
     # Other common Linux fonts
+    "Abyssinica SIL", "OpenSymbol",
     "Bitstream Charter", "Courier 10 Pitch", "Droid Sans Fallback",
     "C059", "P052", "URW Bookman", "URW Gothic",
 ]
+
+# Height of Firefox browser chrome (tab bar + navigation bar).
+# Used to compute window.innerHeight = outerHeight - chrome.
+_BROWSER_CHROME_HEIGHT = 80
+
+# Force C locale for subprocess output parsing (language-independent).
+_SUBPROCESS_ENV = {**os.environ, "LANG": "C", "LC_ALL": "C"}
+
+# Well-known font families on Linux — used as intersection filter
+# against fc-list output so we don't report obscure fonts (TeX, MathJax)
+# that would make the fingerprint too unique.
+_KNOWN_FONT_FAMILIES = {
+    # Liberation (metric-compatible with Arial/Times/Courier)
+    "Liberation Sans", "Liberation Serif", "Liberation Mono",
+    # DejaVu (default on many distros)
+    "DejaVu Sans", "DejaVu Serif", "DejaVu Sans Mono",
+    # Ubuntu
+    "Ubuntu", "Ubuntu Mono", "Ubuntu Condensed",
+    # Noto (Google, broad Unicode)
+    "Noto Sans", "Noto Serif", "Noto Sans Mono", "Noto Mono", "Noto Color Emoji",
+    "Noto Kufi Arabic",
+    "Noto Sans CJK HK", "Noto Serif CJK JP", "Noto Serif CJK SC",
+    "Noto Sans Mono CJK SC",
+    # URW/Ghostscript
+    "Nimbus Sans", "Nimbus Sans Narrow", "Nimbus Roman", "Nimbus Mono PS",
+    "C059", "P052", "URW Bookman", "URW Gothic",
+    # GNU FreeFont
+    "FreeSans", "FreeSerif", "FreeMono",
+    # GNOME/GTK
+    "Cantarell",
+    # LibreOffice / SIL
+    "OpenSymbol", "Abyssinica SIL",
+    # Common system fonts
+    "Bitstream Charter", "Courier 10 Pitch",
+    "Droid Sans", "Droid Sans Fallback", "Droid Serif", "Droid Sans Mono",
+    # Popular user-installed fonts
+    "Roboto", "Roboto Mono", "Roboto Condensed", "Roboto Slab",
+    "Open Sans", "Lato", "Inter",
+    "Fira Sans", "Fira Code", "Fira Mono",
+    "Source Sans 3", "Source Serif 4", "Source Code Pro",
+    "Hack", "JetBrains Mono", "Inconsolata",
+    # KDE/Plasma
+    "Oxygen", "Oxygen Mono",
+    # Red Hat / IBM
+    "Red Hat Display", "Red Hat Text", "Red Hat Mono",
+    "IBM Plex Sans", "IBM Plex Serif", "IBM Plex Mono",
+}
+
+
+@functools.lru_cache(maxsize=1)
+def _detect_system() -> dict:
+    """Detect real display, locale, media device, and CPU properties.
+
+    Cached per process — values don't change during runtime.
+    Falls back to sensible defaults if detection tools are unavailable
+    (e.g. headless server, Wayland without xrandr, container).
+    """
+    info = {
+        "screen_width": 1920, "screen_height": 1080,
+        "avail_width": 1920, "avail_height": 1040,
+        "screen_x": 0, "screen_y": 0,
+        "color_depth": 24,
+        "device_pixel_ratio": 1.0,
+        "language": "en-US", "languages": ["en-US", "en"],
+        "webcams": 0, "micros": 1, "speakers": 1,
+        "cpu_count": os.cpu_count() or 8,
+    }
+
+    # --- Screen resolution via xrandr (primary monitor) ---
+    try:
+        out = subprocess.check_output(
+            ["xrandr", "--current"], text=True, timeout=5,
+            stderr=subprocess.DEVNULL, env=_SUBPROCESS_ENV,
+        )
+        primary_w, primary_h = None, None
+        current_w, current_h = None, None
+        for line in out.splitlines():
+            # Primary: "eDP-1-1 connected primary 1920x1080+0+0"
+            if " primary " in line:
+                match = re.search(r"(\d{3,5})x(\d{3,5})\+", line)
+                if match:
+                    primary_w = int(match.group(1))
+                    primary_h = int(match.group(2))
+            # Current mode (fallback): "   1920x1080     144.42*+"
+            if "*" in line and current_w is None:
+                match = re.search(r"(\d{3,5})x(\d{3,5})", line)
+                if match:
+                    current_w = int(match.group(1))
+                    current_h = int(match.group(2))
+        if primary_w:
+            info["screen_width"] = primary_w
+            info["screen_height"] = primary_h
+        elif current_w:
+            info["screen_width"] = current_w
+            info["screen_height"] = current_h
+    except Exception:
+        pass
+
+    # --- Available work area via _NET_WORKAREA ---
+    try:
+        out = subprocess.check_output(
+            ["xprop", "-root", "_NET_WORKAREA"], text=True, timeout=5,
+            stderr=subprocess.DEVNULL, env=_SUBPROCESS_ENV,
+        )
+        match = re.search(r"=\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)", out)
+        if match:
+            wa_x = int(match.group(1))
+            wa_y = int(match.group(2))
+            wa_w = int(match.group(3))
+            wa_h = int(match.group(4))
+            # Cap at primary monitor dimensions (multi-monitor safety)
+            info["avail_width"] = min(wa_w, info["screen_width"])
+            info["avail_height"] = min(wa_h, info["screen_height"])
+            info["screen_x"] = wa_x
+            info["screen_y"] = wa_y
+    except Exception:
+        info["avail_width"] = info["screen_width"]
+        info["avail_height"] = info["screen_height"] - 40
+
+    # --- Color depth via xdpyinfo ---
+    try:
+        out = subprocess.check_output(
+            ["xdpyinfo"], text=True, timeout=5,
+            stderr=subprocess.DEVNULL, env=_SUBPROCESS_ENV,
+        )
+        match = re.search(r"depth of root window:\s*(\d+)", out)
+        if match:
+            depth = int(match.group(1))
+            if depth in (8, 16, 24, 30, 32):
+                info["color_depth"] = depth
+    except Exception:
+        pass
+
+    # --- Device pixel ratio (HiDPI) ---
+    try:
+        gdk_scale = os.environ.get("GDK_SCALE")
+        if gdk_scale:
+            info["device_pixel_ratio"] = float(gdk_scale)
+        else:
+            out = subprocess.check_output(
+                ["xrdb", "-query"], text=True, timeout=5,
+                stderr=subprocess.DEVNULL, env=_SUBPROCESS_ENV,
+            )
+            for line in out.splitlines():
+                if "Xft.dpi" in line:
+                    m = re.search(r"(\d+)", line.split(":")[-1])
+                    if m:
+                        dpi = int(m.group(1))
+                        if dpi > 0:
+                            info["device_pixel_ratio"] = round(dpi / 96.0, 2)
+                    break
+    except Exception:
+        pass
+
+    # --- System locale → navigator.language ---
+    try:
+        locale_str = (
+            os.environ.get("LC_ALL")
+            or os.environ.get("LC_MESSAGES")
+            or os.environ.get("LANG")
+            or ""
+        )
+        if locale_str:
+            base = locale_str.split(".")[0]  # "pl_PL"
+            if "_" in base:
+                parts = base.split("_")
+                lang = f"{parts[0]}-{parts[1]}"  # "pl-PL"
+                info["language"] = lang
+                info["languages"] = [lang, parts[0]]
+    except Exception:
+        pass
+
+    # --- Media devices ---
+    # Webcams: /dev/video* (physical cameras create device pairs)
+    try:
+        video_devs = _glob("/dev/video*")
+        info["webcams"] = max(len(video_devs) // 2, 0)
+    except Exception:
+        pass
+
+    # Microphones: unique ALSA capture cards
+    try:
+        out = subprocess.check_output(
+            ["arecord", "-l"], text=True, timeout=5,
+            stderr=subprocess.DEVNULL, env=_SUBPROCESS_ENV,
+        )
+        cards = {
+            line.split(":")[0]
+            for line in out.splitlines()
+            if line.startswith("card")
+        }
+        info["micros"] = len(cards) if cards else 0
+    except Exception:
+        pass
+
+    # Speakers: unique ALSA playback cards
+    try:
+        out = subprocess.check_output(
+            ["aplay", "-l"], text=True, timeout=5,
+            stderr=subprocess.DEVNULL, env=_SUBPROCESS_ENV,
+        )
+        cards = {
+            line.split(":")[0]
+            for line in out.splitlines()
+            if line.startswith("card")
+        }
+        info["speakers"] = len(cards) if cards else 0
+    except Exception:
+        pass
+
+    # --- Computed values (maximized browser window) ---
+    info["outer_width"] = info["avail_width"]
+    info["outer_height"] = info["avail_height"]
+    info["inner_width"] = info["avail_width"]
+    info["inner_height"] = info["avail_height"] - _BROWSER_CHROME_HEIGHT
+
+    logger.info(
+        "System detected: screen=%dx%d, avail=%dx%d, dpr=%.1f, "
+        "depth=%d, locale=%s, devices=%d/%d/%d, cpu=%d",
+        info["screen_width"], info["screen_height"],
+        info["avail_width"], info["avail_height"],
+        info["device_pixel_ratio"], info["color_depth"],
+        info["language"],
+        info["webcams"], info["micros"], info["speakers"],
+        info["cpu_count"],
+    )
+    return info
+
+
+@functools.lru_cache(maxsize=1)
+def _detect_fonts() -> list[str]:
+    """Detect installed fonts via fc-list, filtered to well-known families.
+
+    Returns only fonts that are BOTH installed on the system AND in the
+    _KNOWN_FONT_FAMILIES whitelist — avoids obscure fonts (TeX, MathJax)
+    that would make the fingerprint uniquely identifiable.
+    Falls back to _LINUX_FONTS if fc-list is unavailable.
+    """
+    try:
+        out = subprocess.check_output(
+            ["fc-list", "--format", "%{family}\n"],
+            text=True, timeout=10,
+            stderr=subprocess.DEVNULL, env=_SUBPROCESS_ENV,
+        )
+        installed = set()
+        for line in out.splitlines():
+            for name in line.strip().split(","):
+                name = name.strip()
+                if name:
+                    installed.add(name)
+
+        matched = sorted(installed & _KNOWN_FONT_FAMILIES)
+        if matched:
+            logger.info(
+                "Detected %d fonts (from %d installed, %d known)",
+                len(matched), len(installed), len(_KNOWN_FONT_FAMILIES),
+            )
+            return matched
+    except Exception:
+        pass
+
+    logger.info("fc-list unavailable — using fallback font list (%d fonts)", len(_LINUX_FONTS))
+    return _LINUX_FONTS
 
 
 def _build_real_config(browserforge_config: dict) -> dict:
     """Build Camoufox config matching the real host system.
 
-    Keeps useful BrowserForge values (canvas noise, geolocation) but replaces
-    hardware/browser-identifying properties with real system values.
-    This avoids cross-browser/cross-platform inconsistencies that
-    BrowserForge generates (Chrome WebGL in Firefox, Windows platform
-    on Linux, Windows fonts on Linux, etc.).
+    Keeps useful BrowserForge values (geolocation, font spacing) but replaces
+    hardware/browser-identifying properties with values detected from the
+    actual system (screen, CPU, locale, fonts, media devices).
+    All values are applied at C++ level via CAMOU_CONFIG env vars — no
+    JavaScript injection, undetectable by page scripts.
     """
+    sys_info = _detect_system()
+    fonts = _detect_fonts()
     config = {}
 
     # === KEEP from BrowserForge (valuable, no cross-browser conflicts) ===
     _KEEP_KEYS = {
-        "canvas:aaCapOffset", "canvas:aaOffset",       # canvas noise
         "fonts:spacing_seed",                            # font metric randomization
         "geolocation:latitude", "geolocation:longitude", "geolocation:accuracy",
         "timezone",
@@ -180,55 +451,60 @@ def _build_real_config(browserforge_config: dict) -> dict:
         if key in browserforge_config:
             config[key] = browserforge_config[key]
 
-    # === Fonts: use real Linux system fonts ===
-    # BrowserForge generates Windows fonts (Segoe UI, Calibri, etc.) that
-    # don't exist on Linux — a critical anomaly for fingerprint detection.
-    config["fonts"] = _LINUX_FONTS
+    # === Canvas noise: DISABLED ===
+    # Camoufox adds +/-1 pixel noise to canvas via CanvasFingerprintManager.
+    # Facebook detects this: (1) noise pattern is identifiable, (2) canvas
+    # rendering becomes ~10x slower which is measurable by timing attacks.
+    # We use real hardware (GPU, screen, fonts) so the natural canvas
+    # fingerprint is already unique and consistent.  Seed=0 is a no-op
+    # in C++ (ApplyCanvasNoise returns immediately).
+    # Also prevents Camoufox Python lib from generating a random seed
+    # (merge_into/set_into won't overwrite an existing key).
+    config["canvas:seed"] = 0
+
+    # === Fonts: only report fonts actually installed on the system ===
+    # BrowserForge generates Windows fonts (Segoe UI, Calibri) that don't
+    # exist on Linux.  _detect_fonts() intersects fc-list output with a
+    # whitelist of well-known families to avoid unique fingerprints.
+    config["fonts"] = fonts
 
     # === WebGL: handled via webgl_config parameter ===
     # Camoufox ignores manual webGl:vendor/webGl:renderer config keys — the C++
     # code uses the complete WebGL profile from sample_webgl() (vendor + renderer
     # + 147 GL parameters + extensions).  We use the webgl_config parameter
     # in AsyncCamoufox kwargs to select a coherent NVIDIA entry from the database.
-    # See _WEBGL_CONFIG below.
 
     # === REMOVE: navigator.userAgent, platform, oscpu, appVersion ===
     # Let Camoufox + BrowserForge generate from os='linux' param.
-    # This produces correct UA like:
-    # "Mozilla/5.0 (X11; Linux x86_64; rv:135.0) Gecko/20100101 Firefox/135.0"
 
-    # === REAL navigator values ===
-    config["navigator.hardwareConcurrency"] = os.cpu_count() or 16
+    # === Navigator values (detected from system) ===
+    config["navigator.hardwareConcurrency"] = sys_info["cpu_count"]
     config["navigator.maxTouchPoints"] = 0
     config["navigator.doNotTrack"] = "unspecified"
-    config["navigator.language"] = "en-US"
-    config["navigator.languages"] = ["en-US", "en"]
+    config["navigator.language"] = sys_info["language"]
+    config["navigator.languages"] = sys_info["languages"]
 
-    # === REAL screen & window values ===
-    # Maximized Firefox on 1920x1080 Linux with ~40px XFCE taskbar:
-    #   screen:    1920×1080 (physical monitor)
-    #   available: 1920×1040 (minus 40px taskbar)
-    #   outer:     1920×1040 (maximized = fills available area)
-    #   inner:     1920× 960 (minus ~80px browser chrome: tab + address bar)
-    config["screen.width"] = 1920
-    config["screen.height"] = 1080
-    config["screen.availWidth"] = 1920
-    config["screen.availHeight"] = 1040
-    config["screen.colorDepth"] = 24
-    config["screen.pixelDepth"] = 24
-    config["window.devicePixelRatio"] = 1.0
-    config["window.outerWidth"] = 1920
-    config["window.outerHeight"] = 1040
-    config["window.innerWidth"] = 1920
-    config["window.innerHeight"] = 960
-    config["window.screenX"] = 0
-    config["window.screenY"] = 0
+    # === Screen & window values (detected via xrandr + _NET_WORKAREA) ===
+    # Maximized browser: outer = available screen, inner = outer - chrome.
+    config["screen.width"] = sys_info["screen_width"]
+    config["screen.height"] = sys_info["screen_height"]
+    config["screen.availWidth"] = sys_info["avail_width"]
+    config["screen.availHeight"] = sys_info["avail_height"]
+    config["screen.colorDepth"] = sys_info["color_depth"]
+    config["screen.pixelDepth"] = sys_info["color_depth"]
+    config["window.devicePixelRatio"] = sys_info["device_pixel_ratio"]
+    config["window.outerWidth"] = sys_info["outer_width"]
+    config["window.outerHeight"] = sys_info["outer_height"]
+    config["window.innerWidth"] = sys_info["inner_width"]
+    config["window.innerHeight"] = sys_info["inner_height"]
+    config["window.screenX"] = sys_info["screen_x"]
+    config["window.screenY"] = sys_info["screen_y"]
 
-    # === mediaDevices — real PCs always have audio/video devices ===
+    # === Media devices (detected via /dev/video*, arecord, aplay) ===
     config["mediaDevices:enabled"] = True
-    config["mediaDevices:webcams"] = 1
-    config["mediaDevices:micros"] = 1
-    config["mediaDevices:speakers"] = 1
+    config["mediaDevices:webcams"] = sys_info["webcams"]
+    config["mediaDevices:micros"] = sys_info["micros"]
+    config["mediaDevices:speakers"] = sys_info["speakers"]
 
     # === HTTP headers ===
     # Camoufox v146 advertises zstd in Accept-Encoding but Juggler's
@@ -238,10 +514,12 @@ def _build_real_config(browserforge_config: dict) -> dict:
 
     logger.debug(
         "Built real-system config: %d keys (kept %d from BrowserForge, "
-        "set %d Linux fonts, webGl blockIfNotDefined=True)",
+        "%d fonts detected, screen=%dx%d, locale=%s)",
         len(config),
         sum(1 for k in config if k in _KEEP_KEYS),
-        len(_LINUX_FONTS),
+        len(fonts),
+        sys_info["screen_width"], sys_info["screen_height"],
+        sys_info["language"],
     )
     return config
 
@@ -343,6 +621,7 @@ class BrowserManager:
             except (ValueError, IndexError):
                 pass
 
+        sys_info = _detect_system()
         kwargs = dict(
             persistent_context=True,
             user_data_dir=user_data_dir,
@@ -353,11 +632,9 @@ class BrowserManager:
             proxy=proxy,
             os="linux",
             ff_version=ff_version,
-            window=(1920, 1040),
-            # Playwright viewport must match config window.innerWidth/Height.
-            # Camoufox's from_browserforge() puts viewport in context_options
-            # but that only goes into CAMOU_CONFIG env vars, not to Playwright.
-            viewport={"width": 1920, "height": 960},
+            # Window/viewport must match detected screen dimensions.
+            window=(sys_info["outer_width"], sys_info["outer_height"]),
+            viewport={"width": sys_info["inner_width"], "height": sys_info["inner_height"]},
             geoip=camou_config.get("geoip", True),
             webgl_config=_WEBGL_CONFIG,
             exclude_addons=list(DefaultAddons),

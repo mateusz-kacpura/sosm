@@ -296,6 +296,10 @@ class AuthMixin:
         await HumanImitation.type_like_human(self.page, password)
         await HumanImitation.human_delay(0.5, 1.0)
 
+        # Hook reCAPTCHA before login submission (same as main login flow)
+        if await captcha_solver.hook_recaptcha_before_login(self.page):
+            logger.info("reCAPTCHA solved and hooked before modal login")
+
         # Click login button
         login_btn = await self.dom.find_login_button(timeout=5.0)
         if login_btn:

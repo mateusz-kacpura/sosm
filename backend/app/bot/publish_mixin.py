@@ -433,6 +433,34 @@ class PublishMixin:
         await self.page.goto(group_url)
         await HumanImitation.human_delay(3, 6)
 
+        # Check for login modal (session expired during navigation)
+        login_modal = await _eval_js(self.page, """(() => {
+            const emailField = document.querySelector(
+                "input[name='email'], input[type='email']"
+            );
+            const passField = document.querySelector(
+                "input[name='pass'], input[type='password']"
+            );
+            if (!emailField || !passField) return false;
+            const er = emailField.getBoundingClientRect();
+            const pr = passField.getBoundingClientRect();
+            if (er.width < 100 || er.height < 20
+                || pr.width < 100 || pr.height < 20) return false;
+            if (emailField.closest("div[role='dialog']")) return true;
+            if (!document.querySelector("div[role='banner']")) return true;
+            if (Math.abs(er.y - pr.y) < 300) return true;
+            return false;
+        })()""")
+        if login_modal:
+            logger.warning("Sesja wygasla na grupie — wykryto modal logowania")
+            password = getattr(self, '_last_password', None)
+            if password and await self._handle_login_modal(password):
+                await self.page.goto(group_url)
+                await HumanImitation.human_delay(3, 6)
+            else:
+                logger.error("Nie udalo sie zalogowac przez modal na grupie")
+                return False
+
         if await CheckpointDetector.handle_checkpoint_if_needed(self.page, self.screenshot_dir, self.account_email):
             return False
 

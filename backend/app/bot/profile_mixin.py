@@ -73,10 +73,10 @@ class ProfileMixin:
         logger.info("Tytul strony fanpage: '%s'", title)
 
         # Check if we hit a login modal (session expired).
-        # Requires BOTH email and password fields visible + no nav banner
-        # to avoid false positives from search bars on loaded pages.
+        # Facebook may show a "See more from [Page]" login overlay on top
+        # of a partially-rendered page — the div[role='banner'] can exist
+        # BEHIND the modal, so we don't rely on banner absence.
         login_modal = await _eval_js(self.page, """(() => {
-            if (document.querySelector("div[role='banner']")) return false;
             const emailField = document.querySelector(
                 "input[name='email'], input[type='email']"
             );
@@ -86,8 +86,17 @@ class ProfileMixin:
             if (!emailField || !passField) return false;
             const er = emailField.getBoundingClientRect();
             const pr = passField.getBoundingClientRect();
-            return er.width > 100 && er.height > 20
-                && pr.width > 100 && pr.height > 20;
+            if (er.width < 100 || er.height < 20
+                || pr.width < 100 || pr.height < 20) return false;
+
+            // In a dialog = definitely a login modal
+            if (emailField.closest("div[role='dialog']")) return true;
+            // No banner = not logged in, needs login
+            if (!document.querySelector("div[role='banner']")) return true;
+            // Banner present but login fields also visible and stacked
+            // = login overlay on top of page content
+            if (Math.abs(er.y - pr.y) < 300) return true;
+            return false;
         })()""")
         if login_modal:
             logger.warning("Sesja wygasla — wykryto modal logowania, probuje zalogowac")
