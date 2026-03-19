@@ -223,26 +223,8 @@ _KNOWN_FONT_FAMILIES = {
 }
 
 
-@functools.lru_cache(maxsize=1)
-def _detect_system() -> dict:
-    """Detect real display, locale, media device, and CPU properties.
-
-    Cached per process — values don't change during runtime.
-    Falls back to sensible defaults if detection tools are unavailable
-    (e.g. headless server, Wayland without xrandr, container).
-    """
-    info = {
-        "screen_width": 1920, "screen_height": 1080,
-        "avail_width": 1920, "avail_height": 1040,
-        "screen_x": 0, "screen_y": 0,
-        "color_depth": 24,
-        "device_pixel_ratio": 1.0,
-        "language": "en-US", "languages": ["en-US", "en"],
-        "webcams": 0, "micros": 1, "speakers": 1,
-        "cpu_count": os.cpu_count() or 8,
-    }
-
-    # --- Screen resolution via xrandr (primary monitor) ---
+def _detect_screen(info: dict) -> None:
+    """Detect screen resolution via xrandr (primary monitor)."""
     try:
         out = subprocess.check_output(
             ["xrandr", "--current"], text=True, timeout=5,
@@ -251,13 +233,11 @@ def _detect_system() -> dict:
         primary_w, primary_h = None, None
         current_w, current_h = None, None
         for line in out.splitlines():
-            # Primary: "eDP-1-1 connected primary 1920x1080+0+0"
             if " primary " in line:
                 match = re.search(r"(\d{3,5})x(\d{3,5})\+", line)
                 if match:
                     primary_w = int(match.group(1))
                     primary_h = int(match.group(2))
-            # Current mode (fallback): "   1920x1080     144.42*+"
             if "*" in line and current_w is None:
                 match = re.search(r"(\d{3,5})x(\d{3,5})", line)
                 if match:
@@ -272,7 +252,9 @@ def _detect_system() -> dict:
     except Exception as e:
         logger.debug("xrandr failed (using default screen): %s", e)
 
-    # --- Available work area via _NET_WORKAREA ---
+
+def _detect_workarea(info: dict) -> None:
+    """Detect available work area via _NET_WORKAREA."""
     try:
         out = subprocess.check_output(
             ["xprop", "-root", "_NET_WORKAREA"], text=True, timeout=5,
@@ -284,7 +266,6 @@ def _detect_system() -> dict:
             wa_y = int(match.group(2))
             wa_w = int(match.group(3))
             wa_h = int(match.group(4))
-            # Cap at primary monitor dimensions (multi-monitor safety)
             info["avail_width"] = min(wa_w, info["screen_width"])
             info["avail_height"] = min(wa_h, info["screen_height"])
             info["screen_x"] = wa_x
@@ -294,7 +275,9 @@ def _detect_system() -> dict:
         info["avail_width"] = info["screen_width"]
         info["avail_height"] = info["screen_height"] - 40
 
-    # --- Color depth via xdpyinfo ---
+
+def _detect_color_depth(info: dict) -> None:
+    """Detect color depth via xdpyinfo."""
     try:
         out = subprocess.check_output(
             ["xdpyinfo"], text=True, timeout=5,
@@ -308,7 +291,9 @@ def _detect_system() -> dict:
     except Exception as e:
         logger.debug("xdpyinfo failed (using default color depth): %s", e)
 
-    # --- Device pixel ratio (HiDPI) ---
+
+def _detect_dpr(info: dict) -> None:
+    """Detect device pixel ratio (HiDPI) via GDK_SCALE or xrdb."""
     try:
         gdk_scale = os.environ.get("GDK_SCALE")
         if gdk_scale:
@@ -329,7 +314,9 @@ def _detect_system() -> dict:
     except Exception as e:
         logger.debug("DPI detection failed (using default): %s", e)
 
-    # --- System locale → navigator.language ---
+
+def _detect_locale(info: dict) -> None:
+    """Detect system locale for navigator.language."""
     try:
         locale_str = (
             os.environ.get("LC_ALL")
@@ -338,56 +325,47 @@ def _detect_system() -> dict:
             or ""
         )
         if locale_str:
-            base = locale_str.split(".")[0]  # "pl_PL"
+            base = locale_str.split(".")[0]
             if "_" in base:
                 parts = base.split("_")
-                lang = f"{parts[0]}-{parts[1]}"  # "pl-PL"
+                lang = f"{parts[0]}-{parts[1]}"
                 info["language"] = lang
                 info["languages"] = [lang, parts[0]]
     except Exception as e:
         logger.debug("Locale detection failed (using default en-US): %s", e)
 
-    # --- Media devices ---
-    # Webcams: /dev/video* (physical cameras create device pairs)
+
+def _detect_media_devices(info: dict) -> None:
+    """Detect webcams, microphones, and speakers."""
     try:
         video_devs = _glob("/dev/video*")
         info["webcams"] = max(len(video_devs) // 2, 0)
     except Exception as e:
         logger.debug("Webcam detection failed: %s", e)
 
-    # Microphones: unique ALSA capture cards
     try:
         out = subprocess.check_output(
             ["arecord", "-l"], text=True, timeout=5,
             stderr=subprocess.DEVNULL, env=_SUBPROCESS_ENV,
         )
-        cards = {
-            line.split(":")[0]
-            for line in out.splitlines()
-            if line.startswith("card")
-        }
+        cards = {line.split(":")[0] for line in out.splitlines() if line.startswith("card")}
         info["micros"] = len(cards) if cards else 0
     except Exception as e:
         logger.debug("Microphone detection failed (arecord): %s", e)
 
-    # Speakers: unique ALSA playback cards
     try:
         out = subprocess.check_output(
             ["aplay", "-l"], text=True, timeout=5,
             stderr=subprocess.DEVNULL, env=_SUBPROCESS_ENV,
         )
-        cards = {
-            line.split(":")[0]
-            for line in out.splitlines()
-            if line.startswith("card")
-        }
+        cards = {line.split(":")[0] for line in out.splitlines() if line.startswith("card")}
         info["speakers"] = len(cards) if cards else 0
     except Exception as e:
         logger.debug("Speaker detection failed (aplay): %s", e)
 
-    # --- Dark theme detection ---
-    # Firefox checks GTK theme for prefers-color-scheme media query.
-    # Camoufox may not inherit the system theme — detect it explicitly.
+
+def _detect_dark_theme(info: dict) -> None:
+    """Detect dark theme via GTK settings."""
     info["dark_theme"] = False
     try:
         gtk_theme = subprocess.check_output(
@@ -411,7 +389,34 @@ def _detect_system() -> dict:
         except Exception as e:
             logger.debug("Color scheme detection failed: %s", e)
 
-    # --- Computed values (maximized browser window) ---
+
+@functools.lru_cache(maxsize=1)
+def _detect_system() -> dict:
+    """Detect real display, locale, media device, and CPU properties.
+
+    Cached per process — values don't change during runtime.
+    Falls back to sensible defaults if detection tools are unavailable
+    (e.g. headless server, Wayland without xrandr, container).
+    """
+    info = {
+        "screen_width": 1920, "screen_height": 1080,
+        "avail_width": 1920, "avail_height": 1040,
+        "screen_x": 0, "screen_y": 0,
+        "color_depth": 24,
+        "device_pixel_ratio": 1.0,
+        "language": "en-US", "languages": ["en-US", "en"],
+        "webcams": 0, "micros": 1, "speakers": 1,
+        "cpu_count": os.cpu_count() or 8,
+    }
+
+    _detect_screen(info)
+    _detect_workarea(info)
+    _detect_color_depth(info)
+    _detect_dpr(info)
+    _detect_locale(info)
+    _detect_media_devices(info)
+    _detect_dark_theme(info)
+
     info["outer_width"] = info["avail_width"]
     info["outer_height"] = info["avail_height"]
     info["inner_width"] = info["avail_width"]

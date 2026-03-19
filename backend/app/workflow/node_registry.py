@@ -103,181 +103,219 @@ class LoginNode(BaseNode):
         return []
 
 
-class PostGroupNode(BaseNode):
-    node_type = "post_group"
-    label = "Posty na grupach"
-    category = "facebook"
+class _PublishNodeBase(BaseNode):
+    """Shared scheduling + publish loop for PostGroupNode and PostFanpageNode."""
+
+    _collection_key: str = ""   # "groups" or "fanpages"
+    _item_label: str = ""       # "Grupa" or "Fanpage" (for logging)
+
+    def _normalize_items(self, config: dict, items: list, context: "ExecutionContext") -> list:
+        """Convert old config formats to items list. Override in subclass."""
+        return items
+
+    def _empty_error(self) -> str:
+        return f"No {self._collection_key} configured"
+
+    def _make_result(self, url: str, success: bool, item: dict, **extra) -> dict:
+        return {"url": url, "success": success, "recurring": item.get("recurring", False), **extra}
+
+    async def _pre_publish(self, context: "ExecutionContext", config: dict, items: list, state: dict):
+        """Setup before publish loop (e.g. identity switch). Override if needed."""
+
+    async def _post_publish(self, context: "ExecutionContext", state: dict):
+        """Cleanup after publish loop. Override if needed."""
+
+    async def _pre_item(self, context: "ExecutionContext", config: dict, item: dict,
+                        index: int, total: int, state: dict) -> dict | None:
+        """Per-item setup (e.g. identity switch). Returns error result dict or None."""
+        return None
+
+    async def _publish_item(self, context: "ExecutionContext", url: str, content: str,
+                            bg: str | None, media: list, item: dict) -> bool:
+        raise NotImplementedError
 
     async def execute(self, context: "ExecutionContext", config: dict) -> dict:
         test_mode = context.variables.get("test_mode", False)
-        groups = config.get("groups", [])
-        default_content = _resolve_var(config.get("default_content", "") or config.get("content", ""), context.variables)
-        publish_as_fanpage = config.get("publish_as_fanpage") or None
+        items = config.get(self._collection_key, [])
+        default_content = _resolve_var(
+            config.get("default_content", "") or config.get("content", ""),
+            context.variables,
+        )
 
         if not context.fb_actions:
             raise NodeExecutionError("No browser session")
 
-        # Backward compat: single group_url field
-        if not groups and config.get("group_url"):
-            groups = [{"url": config["group_url"]}]
+        items = self._normalize_items(config, items, context)
+        if not items:
+            raise NodeExecutionError(self._empty_error())
 
-        if not groups:
-            raise NodeExecutionError("No groups configured")
+        logger.info("%s: %d item(s), content=%d chars, test=%s",
+                    self.node_type, len(items), len(default_content), test_mode)
 
-        logger.info("PostGroup: %d grup, tresc=%d znakow, fanpage_globalny=%s, test=%s",
-                    len(groups), len(default_content), publish_as_fanpage or "brak", test_mode)
+        state = {}
+        await self._pre_publish(context, config, items, state)
 
-        # Resolve global fanpage URL (backward compat: single fanpage for all groups)
+        try:
+            if test_mode:
+                active = items
+                logger.info("Test mode — skipping schedule filter, all %d %s active",
+                            len(items), self._collection_key)
+            else:
+                active = _filter_scheduled_items(items)
+
+            results, completed, failed = [], 0, 0
+
+            for i, item in enumerate(active):
+                url = _resolve_var(item.get("url", ""), context.variables)
+                if not url:
+                    continue
+
+                error = await self._pre_item(context, config, item, i, len(active), state)
+                if error:
+                    results.append(error)
+                    failed += 1
+                    continue
+
+                item_content = item.get("content", "")
+                content = _resolve_var(item_content, context.variables) if item_content else default_content
+
+                if not test_mode:
+                    planned_date = item.get("planned_date", "")
+                    planned_time = item.get("planned_time", "")
+                    if planned_date and planned_time:
+                        await _wait_until_planned(planned_date, planned_time)
+                    if item.get("recurring") and item.get("recurring_time"):
+                        await _wait_until_recurring_time(
+                            item["recurring_time"], item.get("recurring_jitter", 0))
+
+                bg = item.get("background_style") or None
+                media = item.get("media_files") or config.get("default_media_files") or []
+
+                try:
+                    logger.info("%s %d/%d: %s (bg=%s, media=%d)",
+                                self._item_label, i + 1, len(active), url,
+                                bg or "brak", len(media))
+                    success = await self._publish_item(context, url, content, bg, media, item)
+                    results.append(self._make_result(url, success, item))
+                    if success:
+                        completed += 1
+                        logger.info("%s %d/%d: OPUBLIKOWANO", self._item_label, i + 1, len(active))
+                    else:
+                        failed += 1
+                        logger.warning("%s %d/%d: NIEPOWODZENIE", self._item_label, i + 1, len(active))
+                except Exception as exc:
+                    logger.error("%s %d/%d (%s) error: %s",
+                                 self._item_label, i + 1, len(active), url, exc)
+                    results.append(self._make_result(url, False, item, error=str(exc)))
+                    failed += 1
+
+                if i < len(active) - 1:
+                    delay = random.uniform(5, 10) if test_mode else random.uniform(3, 8)
+                    logger.info("Pausing %.1fs between posts", delay)
+                    await asyncio.sleep(delay)
+
+            skipped = len(items) - len(active)
+
+            if not active:
+                logger.info("No %s active today (all %d skipped by schedule)",
+                            self._collection_key, len(items))
+                context.variables["last_publish_result"] = "skipped"
+                return {
+                    "total": len(items), "active": 0,
+                    "completed": 0, "failed": 0, "skipped": skipped,
+                    "results": [],
+                }
+
+            context.variables["last_publish_result"] = (
+                "success" if failed == 0 else "partial" if completed > 0 else "failed"
+            )
+            return {
+                "total": len(items), "active": len(active),
+                "completed": completed, "failed": failed,
+                "skipped": skipped, "results": results,
+            }
+
+        finally:
+            await self._post_publish(context, state)
+
+
+class PostGroupNode(_PublishNodeBase):
+    node_type = "post_group"
+    label = "Posty na grupach"
+    category = "facebook"
+    _collection_key = "groups"
+    _item_label = "Grupa"
+
+    def _normalize_items(self, config, items, context):
+        if not items and config.get("group_url"):
+            return [{"url": config["group_url"]}]
+        return items
+
+    def _empty_error(self):
+        return "No groups configured"
+
+    def _make_result(self, url, success, item, **extra):
+        desired = extra.pop("fanpage_url", item.get("fanpage_url") or None)
+        return {"url": url, "success": success, "recurring": item.get("recurring", False),
+                "fanpage_url": desired, **extra}
+
+    async def _pre_publish(self, context, config, items, state):
+        publish_as_fanpage = config.get("publish_as_fanpage") or None
         global_fanpage = _resolve_var(publish_as_fanpage, context.variables) if publish_as_fanpage else None
+        state["global_fanpage"] = global_fanpage
+        state["current_fanpage"] = None
 
-        # Determine initial identity
-        current_fanpage = None  # None = personal profile
         if global_fanpage:
-            # Check if any group has a per-group override — if not, switch once
-            has_per_group = any(g.get("fanpage_url") for g in groups)
+            has_per_group = any(g.get("fanpage_url") for g in items)
             if not has_per_group:
                 logger.info("Przelaczanie na profil fanpage przed postami na grupach: %s", global_fanpage)
-                switched = await context.fb_actions.switch_to_page_profile(global_fanpage)
-                if not switched:
+                if not await context.fb_actions.switch_to_page_profile(global_fanpage):
                     raise NodeExecutionError(f"Nie udalo sie przelaczac na fanpage: {global_fanpage}")
-                current_fanpage = global_fanpage
+                state["current_fanpage"] = global_fanpage
                 if not await context.fb_actions.verify_identity_as_fanpage():
                     raise NodeExecutionError("Weryfikacja tozsamosci nieudana — profil osobisty aktywny zamiast fanpage")
         else:
             if not await context.fb_actions.verify_identity_as_personal():
                 raise NodeExecutionError("Wykryto aktywny profil fanpage zamiast osobistego — przerywam")
 
-        try:
-            # Filter groups by recurring schedule — skip if today is not a scheduled day
-            if test_mode:
-                active_groups = groups
-                logger.info("Test mode — skipping schedule filter, all %d groups active", len(groups))
-            else:
-                active_groups = _filter_scheduled_groups(groups)
+    async def _pre_item(self, context, config, item, index, total, state):
+        global_fanpage = state["global_fanpage"]
+        current_fanpage = state["current_fanpage"]
+        group_fanpage_raw = item.get("fanpage_url") or None
+        desired = _resolve_var(group_fanpage_raw, context.variables) if group_fanpage_raw else global_fanpage
 
-            results = []
-            completed = 0
-            failed = 0
-            skipped = 0
-
-            for i, group in enumerate(active_groups):
-                url = _resolve_var(group.get("url", ""), context.variables)
-                if not url:
-                    continue
-
-                # Per-group fanpage override (empty or missing = use global)
-                group_fanpage_raw = group.get("fanpage_url") or None
-                desired_fanpage = _resolve_var(group_fanpage_raw, context.variables) if group_fanpage_raw else global_fanpage
-
-                # Switch identity if needed
-                if desired_fanpage != current_fanpage:
-                    if current_fanpage:
-                        await context.fb_actions.switch_to_personal_profile()
-                        context.fb_actions._current_page_name = None
-                        logger.info("Przywrocono profil osobisty przed zmiana fanpage")
-                    if desired_fanpage:
-                        logger.info("Przelaczanie na fanpage: %s (grupa %d/%d)", desired_fanpage, i + 1, len(active_groups))
-                        switched = await context.fb_actions.switch_to_page_profile(desired_fanpage)
-                        if not switched:
-                            logger.error("Nie udalo sie przelaczac na fanpage %s — pomijam grupe %s", desired_fanpage, url)
-                            results.append({"url": url, "success": False, "error": f"Identity switch failed: {desired_fanpage}"})
-                            failed += 1
-                            continue
-                    current_fanpage = desired_fanpage
-
-                # Per-group content with fallback to default
-                group_content = group.get("content", "")
-                content = _resolve_var(group_content, context.variables) if group_content else default_content
-
-                # Wait until planned time if set (one-shot schedule)
-                if not test_mode:
-                    planned_date = group.get("planned_date", "")
-                    planned_time = group.get("planned_time", "")
-                    if planned_date and planned_time:
-                        await _wait_until_planned(planned_date, planned_time)
-
-                # For recurring groups, wait until recurring_time today (with jitter)
-                if not test_mode and group.get("recurring") and group.get("recurring_time"):
-                    jitter_minutes = group.get("recurring_jitter", 0)
-                    await _wait_until_recurring_time(group["recurring_time"], jitter_minutes)
-
-                # Per-group background color
-                group_bg = group.get("background_style") or None
-
-                # Per-group media files with fallback to default
-                group_media = group.get("media_files") or config.get("default_media_files") or []
-
-                try:
-                    fanpage_label = f", fanpage={desired_fanpage}" if desired_fanpage else ""
-                    logger.info("Grupa %d/%d: %s (bg=%s, media=%d%s)",
-                                i + 1, len(active_groups), url,
-                                group_bg or "brak", len(group_media), fanpage_label)
-                    success = await context.fb_actions.publish_on_group(
-                        url, content,
-                        media_urls=group_media or None,
-                        background_style=group_bg,
-                    )
-                    results.append({
-                        "url": url, "success": success,
-                        "recurring": group.get("recurring", False),
-                        "fanpage_url": desired_fanpage,
-                    })
-                    if success:
-                        completed += 1
-                        logger.info("Grupa %d/%d: OPUBLIKOWANO", i + 1, len(active_groups))
-                    else:
-                        failed += 1
-                        logger.warning("Grupa %d/%d: NIEPOWODZENIE", i + 1, len(active_groups))
-                except Exception as exc:
-                    logger.error("Failed to post to group %s: %s", url, exc)
-                    results.append({"url": url, "success": False, "error": str(exc)})
-                    failed += 1
-
-                # Brief pause between groups to avoid rate limiting
-                if i < len(active_groups) - 1:
-                    delay = random.uniform(5, 10) if test_mode else random.uniform(3, 8)
-                    logger.info("Pausing %.1fs between group posts", delay)
-                    await asyncio.sleep(delay)
-
-            skipped = len(groups) - len(active_groups)
-
-            if len(active_groups) == 0:
-                logger.info("No groups active today (all %d skipped by schedule)", len(groups))
-                context.variables["last_publish_result"] = "skipped"
-                return {
-                    "total": len(groups),
-                    "active": 0,
-                    "completed": 0,
-                    "failed": 0,
-                    "skipped": skipped,
-                    "results": [],
-                }
-
-            context.variables["last_publish_result"] = "success" if failed == 0 else "partial" if completed > 0 else "failed"
-            return {
-                "total": len(groups),
-                "active": len(active_groups),
-                "completed": completed,
-                "failed": failed,
-                "skipped": skipped,
-                "results": results,
-            }
-
-        finally:
+        if desired != current_fanpage:
             if current_fanpage:
-                try:
-                    await context.fb_actions.switch_to_personal_profile()
-                    logger.info("Przywrocono profil osobisty po postach na grupach")
-                except Exception as e:
-                    logger.warning("Nie udalo sie przywrocic profilu osobistego: %s", e)
+                await context.fb_actions.switch_to_personal_profile()
                 context.fb_actions._current_page_name = None
+                logger.info("Przywrocono profil osobisty przed zmiana fanpage")
+            if desired:
+                logger.info("Przelaczanie na fanpage: %s (grupa %d/%d)", desired, index + 1, total)
+                if not await context.fb_actions.switch_to_page_profile(desired):
+                    url = _resolve_var(item.get("url", ""), context.variables)
+                    logger.error("Nie udalo sie przelaczac na fanpage %s — pomijam grupe %s", desired, url)
+                    return self._make_result(url, False, item, error=f"Identity switch failed: {desired}")
+            state["current_fanpage"] = desired
+        return None
+
+    async def _publish_item(self, context, url, content, bg, media, item):
+        return await context.fb_actions.publish_on_group(
+            url, content, media_urls=media or None, background_style=bg)
+
+    async def _post_publish(self, context, state):
+        if state.get("current_fanpage"):
+            try:
+                await context.fb_actions.switch_to_personal_profile()
+                logger.info("Przywrocono profil osobisty po postach na grupach")
+            except Exception as e:
+                logger.warning("Nie udalo sie przywrocic profilu osobistego: %s", e)
+            context.fb_actions._current_page_name = None
 
     def validate_config(self, config: dict) -> list[str]:
         errors = []
         groups = config.get("groups", [])
         if not groups and not config.get("group_url"):
             errors.append("Dodaj przynajmniej jedną grupę")
-        # Content can be per-group or default
         has_any_content = config.get("default_content") or config.get("content") or any(g.get("content") for g in groups)
         if not has_any_content:
             errors.append("Treść posta jest wymagana (domyślna lub per grupa)")
@@ -287,132 +325,44 @@ class PostGroupNode(BaseNode):
         return errors
 
 
-class PostFanpageNode(BaseNode):
+class PostFanpageNode(_PublishNodeBase):
     node_type = "post_fanpage"
     label = "Posty na fanpage'ach"
     category = "facebook"
+    _collection_key = "fanpages"
+    _item_label = "Fanpage"
+
+    def _normalize_items(self, config, items, context):
+        if items:
+            return items
+        urls = config.get("fanpage_urls") or []
+        if not urls:
+            single = _resolve_var(config.get("fanpage_url", ""), context.variables)
+            if single:
+                urls = [single]
+        if urls:
+            old_bg = config.get("background_style") or ""
+            old_media = config.get("media_files") or []
+            return [{"url": u, "content": "", "background_style": old_bg, "media_files": old_media} for u in urls]
+        return []
+
+    def _empty_error(self):
+        return "Brak fanpage'y — skonfiguruj przynajmniej jeden"
+
+    def _make_result(self, url, success, item, **extra):
+        return {"fanpage_url": url, "success": success, "recurring": item.get("recurring", False), **extra}
+
+    async def _publish_item(self, context, url, content, bg, media, item):
+        return await context.fb_actions.publish_on_fanpage(
+            url, content, background_style=bg, media_urls=media or None)
 
     async def execute(self, context: "ExecutionContext", config: dict) -> dict:
-        test_mode = context.variables.get("test_mode", False)
-        fanpages = config.get("fanpages", [])
-        default_content = _resolve_var(
-            config.get("default_content", "") or config.get("content", ""),
-            context.variables,
-        )
-
-        if not context.fb_actions:
-            raise NodeExecutionError("No browser session")
-
-        # Backward compat: old-style fanpage_urls / fanpage_url
-        if not fanpages:
-            urls = config.get("fanpage_urls") or []
-            if not urls:
-                single = _resolve_var(config.get("fanpage_url", ""), context.variables)
-                if single:
-                    urls = [single]
-            if urls:
-                old_bg = config.get("background_style") or None
-                old_media = config.get("media_files") or []
-                fanpages = [{"url": u, "content": "", "background_style": old_bg or "", "media_files": old_media} for u in urls]
-
-        if not fanpages:
-            raise NodeExecutionError("Brak fanpage'y — skonfiguruj przynajmniej jeden")
-
-        logger.info("PostFanpage: %d fanpage(y), tresc=%d znakow, test=%s",
-                    len(fanpages), len(default_content), test_mode)
-
-        # Filter by recurring schedule
-        if test_mode:
-            active_fanpages = fanpages
-            logger.info("Test mode — skipping schedule filter, all %d fanpages active", len(fanpages))
-        else:
-            active_fanpages = _filter_scheduled_groups(fanpages)
-
-        results = []
-        completed = 0
-        failed = 0
-
-        for i, fp in enumerate(active_fanpages):
-            url = _resolve_var(fp.get("url", ""), context.variables)
-            if not url:
-                continue
-
-            # Per-fanpage content with fallback to default
-            fp_content = fp.get("content", "")
-            content = _resolve_var(fp_content, context.variables) if fp_content else default_content
-
-            # Wait until planned time if set (one-shot schedule)
-            if not test_mode:
-                planned_date = fp.get("planned_date", "")
-                planned_time = fp.get("planned_time", "")
-                if planned_date and planned_time:
-                    await _wait_until_planned(planned_date, planned_time)
-
-            # For recurring fanpages, wait until recurring_time today (with jitter)
-            if not test_mode and fp.get("recurring") and fp.get("recurring_time"):
-                jitter_minutes = fp.get("recurring_jitter", 0)
-                await _wait_until_recurring_time(fp["recurring_time"], jitter_minutes)
-
-            # Per-fanpage background and media
-            fp_bg = fp.get("background_style") or None
-            fp_media = fp.get("media_files") or config.get("default_media_files") or []
-
-            try:
-                logger.info(
-                    "Fanpage %d/%d: %s (bg=%s, media=%d)",
-                    i + 1, len(active_fanpages), url,
-                    fp_bg or "brak", len(fp_media),
-                )
-                success = await context.fb_actions.publish_on_fanpage(
-                    url, content,
-                    background_style=fp_bg,
-                    media_urls=fp_media or None,
-                )
-                results.append({
-                    "fanpage_url": url, "success": success,
-                    "recurring": fp.get("recurring", False),
-                })
-                if success:
-                    completed += 1
-                    logger.info("Fanpage %d/%d: OPUBLIKOWANO", i + 1, len(active_fanpages))
-                else:
-                    failed += 1
-                    logger.warning("Fanpage %d/%d: NIEPOWODZENIE", i + 1, len(active_fanpages))
-            except Exception as exc:
-                logger.error("Fanpage %d/%d (%s) blad: %s", i + 1, len(active_fanpages), url, exc)
-                results.append({"fanpage_url": url, "success": False, "error": str(exc)})
-                failed += 1
-
-            # Brief pause between fanpages to avoid rate limiting
-            if i < len(active_fanpages) - 1:
-                delay = random.uniform(5, 10) if test_mode else random.uniform(3, 8)
-                logger.info("Pausing %.1fs between fanpage posts", delay)
-                await asyncio.sleep(delay)
-
-        skipped = len(fanpages) - len(active_fanpages)
-
-        if len(active_fanpages) == 0:
-            logger.info("No fanpages active today (all %d skipped by schedule)", len(fanpages))
-            context.variables["last_publish_result"] = "skipped"
-            return {
-                "total": len(fanpages), "active": 0,
-                "completed": 0, "failed": 0, "skipped": skipped,
-                "results": [],
-            }
-
-        context.variables["last_publish_result"] = (
-            "success" if failed == 0 else "partial" if completed > 0 else "failed"
-        )
-
+        result = await super().execute(context, config)
         # Backward compat for single-URL old config
-        if len(fanpages) == 1 and not config.get("fanpages"):
-            return {"success": results[0]["success"], "fanpage_url": results[0]["fanpage_url"]}
-
-        return {
-            "total": len(fanpages), "active": len(active_fanpages),
-            "completed": completed, "failed": failed, "skipped": skipped,
-            "results": results,
-        }
+        if not config.get("fanpages") and len(result.get("results", [])) == 1:
+            r = result["results"][0]
+            return {"success": r["success"], "fanpage_url": r["fanpage_url"]}
+        return result
 
     def validate_config(self, config: dict) -> list[str]:
         errors = []
@@ -707,28 +657,28 @@ def get_node(node_type: str) -> BaseNode:
 
 # ── Helpers ──
 
-def _filter_scheduled_groups(groups: list[dict]) -> list[dict]:
-    """Filter groups to only those active today.
+def _filter_scheduled_items(items: list[dict]) -> list[dict]:
+    """Filter items to only those active today.
 
-    - Non-recurring groups: always included (their planned_date handles timing)
-    - Recurring groups: included only if today's weekday is in recurring_days
+    - Non-recurring items: always included (their planned_date handles timing)
+    - Recurring items: included only if today's weekday is in recurring_days
       (0=Monday ... 6=Sunday, ISO weekday)
     """
     from datetime import datetime
     today_weekday = datetime.now().weekday()  # 0=Monday ... 6=Sunday
 
     active = []
-    for group in groups:
-        if not group.get("recurring"):
-            active.append(group)
+    for item in items:
+        if not item.get("recurring"):
+            active.append(item)
             continue
-        recurring_days = group.get("recurring_days", [])
+        recurring_days = item.get("recurring_days", [])
         if not recurring_days or today_weekday in recurring_days:
-            active.append(group)
+            active.append(item)
         else:
             logger.debug(
-                "Skipping recurring group %s — today is %d, scheduled for %s",
-                group.get("url", "?"), today_weekday, recurring_days,
+                "Skipping recurring item %s — today is %d, scheduled for %s",
+                item.get("url", "?"), today_weekday, recurring_days,
             )
     return active
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useRef, useEffect, useMemo, Fragment } from "react"
+import { useState, useCallback, useEffect, useMemo, Fragment } from "react"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import {
@@ -9,24 +9,16 @@ import {
 } from "lucide-react"
 import { api, uploadMedia } from "@/lib/api"
 import {
-  FB_BACKGROUNDS, getBgColor,
+  getBgColor,
   SPREAD_STEPS, formatSpread,
 } from "@/app/campaigns/spreadsheet"
+import {
+  type ScheduleEntry,
+  DAY_LABELS, pad, formatJitter, formatRecurringDays, generateSchedule,
+  usePopover, RecurringSubRow, BgPickerPopover, MediaPickerPopover, DefaultMediaSection,
+} from "./schedule-shared"
 
-const DAY_LABELS = ["Pn", "Wt", "Śr", "Cz", "Pt", "Sb", "Nd"] as const
-
-export interface FanpageEntry {
-  url: string
-  content: string
-  planned_date: string
-  planned_time: string
-  recurring: boolean
-  recurring_days: number[]  // 0=Mon ... 6=Sun
-  recurring_time: string    // "HH:MM"
-  recurring_jitter: number  // 0-120 minutes of random deviation
-  background_style: string
-  media_files: string[]
-}
+export type FanpageEntry = ScheduleEntry
 
 export interface PostFanpagesConfig {
   fanpages: FanpageEntry[]
@@ -56,87 +48,8 @@ function parseFanpageUrls(text: string): string[] {
   })
 }
 
-function pad(n: number) {
-  return n.toString().padStart(2, "0")
-}
-
 function makeEmptyFanpage(): FanpageEntry {
   return { url: "", content: "", planned_date: "", planned_time: "", recurring: false, recurring_days: [], recurring_time: "10:00", recurring_jitter: 15, background_style: "", media_files: [] }
-}
-
-function formatJitter(minutes: number): string {
-  if (minutes === 0) return "dokładnie"
-  if (minutes < 60) return `\u00B1${minutes} min`
-  const h = minutes / 60
-  return `\u00B1${h % 1 === 0 ? h : h.toFixed(1)}h`
-}
-
-function generateFanpageSchedule(
-  urls: string[],
-  defaultContent: string,
-  startHour: string,
-  endHour: string,
-  spreadIdx: number,
-): FanpageEntry[] {
-  if (urls.length === 0) return []
-
-  const spreadMin = SPREAD_STEPS[spreadIdx]
-  const [sh, sm] = startHour.split(":").map(Number)
-  const [eh, em] = endHour.split(":").map(Number)
-  const startMinutes = sh * 60 + sm
-  const endMinutes = eh * 60 + em
-  const windowMinutes = endMinutes - startMinutes
-
-  const tomorrow = new Date()
-  tomorrow.setDate(tomorrow.getDate() + 1)
-  tomorrow.setHours(0, 0, 0, 0)
-
-  let cursorDay = 0
-  let cursorMin = startMinutes
-
-  return urls.map((url) => {
-    const dt = new Date(tomorrow)
-    dt.setDate(dt.getDate() + cursorDay)
-    dt.setHours(Math.floor(cursorMin / 60), Math.round(cursorMin % 60), 0, 0)
-
-    if (spreadMin > 0) {
-      const jitter = 1 + (Math.random() * 0.2 - 0.1)
-      cursorMin += Math.round(spreadMin * jitter)
-      while (cursorMin > endMinutes) {
-        cursorMin = cursorMin - endMinutes + startMinutes
-        cursorDay++
-      }
-    } else {
-      cursorMin += Math.round(windowMinutes / 2)
-      if (cursorMin > endMinutes) {
-        cursorMin = startMinutes + Math.round(windowMinutes / 2)
-        cursorDay++
-      }
-    }
-
-    const finalMin = dt.getHours() * 60 + dt.getMinutes()
-
-    return {
-      url,
-      content: defaultContent,
-      planned_date: `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`,
-      planned_time: `${pad(Math.floor(finalMin / 60))}:${pad(Math.round(finalMin % 60))}`,
-      recurring: false,
-      recurring_days: [],
-      recurring_time: "10:00",
-      recurring_jitter: 15,
-      background_style: "",
-      media_files: [],
-    }
-  })
-}
-
-function formatRecurringDays(days: number[]): string {
-  if (days.length === 0) return "brak dni"
-  if (days.length === 7) return "codziennie"
-  if (days.length === 5 && [0,1,2,3,4].every((d) => days.includes(d))) return "dni robocze"
-  if (days.length === 2 && [5,6].every((d) => days.includes(d))) return "weekendy"
-  return days.map((d) => DAY_LABELS[d]).join(", ")
 }
 
 export function FanpageScheduleModal({ config, onSave, onClose, accounts }: FanpageScheduleModalProps) {
@@ -165,14 +78,8 @@ export function FanpageScheduleModal({ config, onSave, onClose, accounts }: Fanp
   const [defaultMediaFiles, setDefaultMediaFiles] = useState<string[]>(config.default_media_files || [])
   const [mediaUploading, setMediaUploading] = useState(false)
   const [rawText, setRawText] = useState("")
-  const [showBgPicker, setShowBgPicker] = useState(false)
-  const [bgPickerTarget, setBgPickerTarget] = useState<number>(0)
-  const bgPopoverRef = useRef<HTMLDivElement>(null)
-  const [bgPos, setBgPos] = useState({ top: 0, left: 0 })
-  const [showMediaPicker, setShowMediaPicker] = useState(false)
-  const [mediaPickerTarget, setMediaPickerTarget] = useState<number>(0)
-  const mediaPopoverRef = useRef<HTMLDivElement>(null)
-  const [mediaPos, setMediaPos] = useState({ top: 0, left: 0 })
+  const bgPicker = usePopover(280, 320, "data-bg-row-btn")
+  const mediaPicker = usePopover(300, 280, "data-media-row-btn")
 
   const spreadMin = SPREAD_STEPS[spreadIdx]
   const parsedCount = parseFanpageUrls(rawText).length
@@ -195,64 +102,10 @@ export function FanpageScheduleModal({ config, onSave, onClose, accounts }: Fanp
     return Array.from(set)
   }, [defaultMediaFiles, fanpages])
 
-  const openBgPicker = useCallback((rowIdx: number, anchorEl: HTMLElement) => {
-    const rect = anchorEl.getBoundingClientRect()
-    const popW = 280
-    let left = rect.left
-    if (left + popW > window.innerWidth - 8) left = window.innerWidth - popW - 8
-    if (left < 8) left = 8
-    const spaceBelow = window.innerHeight - rect.bottom
-    const top = spaceBelow > 320 ? rect.bottom + 4 : rect.top - 320
-    setBgPos({ top, left })
-    setBgPickerTarget(rowIdx)
-    setShowBgPicker(true)
-  }, [])
-
-  useEffect(() => {
-    if (!showBgPicker) return
-    const onMouseDown = (e: MouseEvent) => {
-      const target = e.target as HTMLElement
-      if (bgPopoverRef.current?.contains(target)) return
-      if (target.closest("[data-bg-row-btn]")) return
-      setShowBgPicker(false)
-    }
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShowBgPicker(false) }
-    document.addEventListener("mousedown", onMouseDown)
-    document.addEventListener("keydown", onKey)
-    return () => { document.removeEventListener("mousedown", onMouseDown); document.removeEventListener("keydown", onKey) }
-  }, [showBgPicker])
-
-  const openMediaPicker = useCallback((rowIdx: number, anchorEl: HTMLElement) => {
-    const rect = anchorEl.getBoundingClientRect()
-    const popW = 300
-    let left = rect.left
-    if (left + popW > window.innerWidth - 8) left = window.innerWidth - popW - 8
-    if (left < 8) left = 8
-    const spaceBelow = window.innerHeight - rect.bottom
-    const top = spaceBelow > 280 ? rect.bottom + 4 : rect.top - 280
-    setMediaPos({ top, left })
-    setMediaPickerTarget(rowIdx)
-    setShowMediaPicker(true)
-  }, [])
-
-  useEffect(() => {
-    if (!showMediaPicker) return
-    const onMouseDown = (e: MouseEvent) => {
-      const target = e.target as HTMLElement
-      if (mediaPopoverRef.current?.contains(target)) return
-      if (target.closest("[data-media-row-btn]")) return
-      setShowMediaPicker(false)
-    }
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShowMediaPicker(false) }
-    document.addEventListener("mousedown", onMouseDown)
-    document.addEventListener("keydown", onKey)
-    return () => { document.removeEventListener("mousedown", onMouseDown); document.removeEventListener("keydown", onKey) }
-  }, [showMediaPicker])
-
   const handleGenerate = useCallback(() => {
     const urls = parseFanpageUrls(rawText)
     if (urls.length === 0) return
-    const newEntries = generateFanpageSchedule(urls, defaultContent, activeHoursStart, activeHoursEnd, spreadIdx)
+    const newEntries = generateSchedule<FanpageEntry>(urls, defaultContent, activeHoursStart, activeHoursEnd, spreadIdx)
     setFanpages((prev) => [...prev, ...newEntries])
     setRawText("")
   }, [rawText, defaultContent, activeHoursStart, activeHoursEnd, spreadIdx])
@@ -347,11 +200,11 @@ export function FanpageScheduleModal({ config, onSave, onClose, accounts }: Fanp
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !showBgPicker && !showMediaPicker) onClose()
+      if (e.key === "Escape" && !bgPicker.show && !mediaPicker.show) onClose()
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)
-  }, [onClose, showBgPicker, showMediaPicker])
+  }, [onClose, bgPicker.show, mediaPicker.show])
 
   const recurringCount = fanpages.filter((fp) => fp.recurring).length
 
@@ -423,73 +276,14 @@ export function FanpageScheduleModal({ config, onSave, onClose, accounts }: Fanp
           )}
 
           {/* Default Media */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-xs flex items-center gap-1.5">
-                <ImagePlus className="h-3.5 w-3.5 text-primary" />
-                Media (zdjęcia / filmy)
-              </Label>
-              <label className={`text-[10px] cursor-pointer transition-colors ${mediaUploading ? "text-muted-foreground" : "text-primary hover:text-primary/80"}`}>
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime"
-                  multiple
-                  onChange={handleMediaUpload}
-                  disabled={mediaUploading}
-                  className="hidden"
-                />
-                {mediaUploading ? "Przesyłanie..." : "+ Dodaj pliki"}
-              </label>
-            </div>
-            {defaultMediaFiles.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {defaultMediaFiles.map((filename) => {
-                  const isVideo = filename.endsWith(".mp4") || filename.endsWith(".mov")
-                  return (
-                    <div key={filename} className="relative group">
-                      <div className="h-16 w-16 rounded-md border border-primary/10 bg-secondary/50 flex items-center justify-center overflow-hidden">
-                        {isVideo ? (
-                          <Film className="h-6 w-6 text-muted-foreground" />
-                        ) : (
-                          <img
-                            src={`/api/media/file/${filename}`}
-                            alt={filename}
-                            className="h-full w-full object-cover"
-                            onError={(e) => { (e.target as HTMLImageElement).style.display = "none" }}
-                          />
-                        )}
-                      </div>
-                      <button
-                        onClick={() => removeDefaultMedia(filename)}
-                        className="absolute -top-1.5 -right-1.5 h-4 w-4 rounded-full bg-rose-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        <X className="h-2.5 w-2.5" />
-                      </button>
-                      <p className="text-[8px] text-muted-foreground truncate w-16 mt-0.5" title={filename}>
-                        {filename.replace(/^[a-f0-9]+_/, "")}
-                      </p>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-            {defaultMediaFiles.length > 0 && (
-              <div className="flex items-center justify-between">
-                <p className="text-[10px] text-muted-foreground">
-                  {defaultMediaFiles.length} {defaultMediaFiles.length === 1 ? "plik" : defaultMediaFiles.length < 5 ? "pliki" : "plików"}
-                  {" · "}Media i tło wzajemnie się wykluczają
-                </p>
-                {fanpages.length > 0 && (
-                  <button
-                    onClick={applyMediaToAll}
-                    className="text-[10px] text-primary hover:text-primary/80 transition-colors"
-                  >
-                    Zastosuj do wszystkich
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
+          <DefaultMediaSection
+            files={defaultMediaFiles}
+            onUpload={handleMediaUpload}
+            onRemove={removeDefaultMedia}
+            uploading={mediaUploading}
+            onApplyAll={applyMediaToAll}
+            hasEntries={fanpages.length > 0}
+          />
 
           {/* Default Content */}
           <div className="space-y-2">
@@ -663,7 +457,7 @@ export function FanpageScheduleModal({ config, onSave, onClose, accounts }: Fanp
                         <div className="flex items-center justify-center bg-card">
                           <button
                             data-bg-row-btn
-                            onClick={(e) => openBgPicker(i, e.currentTarget)}
+                            onClick={(e) => bgPicker.open(i, e.currentTarget)}
                             className={`h-5 w-5 rounded border cursor-pointer transition-all hover:scale-110 ${
                               fp.background_style ? "border-primary/30" : "border-primary/10 hover:border-primary/30"
                             } ${fp.media_files.length > 0 ? "opacity-30 pointer-events-none" : ""}`}
@@ -678,7 +472,7 @@ export function FanpageScheduleModal({ config, onSave, onClose, accounts }: Fanp
                         <div className="flex items-center justify-center bg-card">
                           <button
                             data-media-row-btn
-                            onClick={(e) => openMediaPicker(i, e.currentTarget)}
+                            onClick={(e) => mediaPicker.open(i, e.currentTarget)}
                             className={`relative h-5 w-5 rounded border cursor-pointer transition-all hover:scale-110 ${
                               fp.media_files.length > 0
                                 ? "border-primary/30 bg-primary/10"
@@ -717,51 +511,8 @@ export function FanpageScheduleModal({ config, onSave, onClose, accounts }: Fanp
                         </div>
                       </div>
 
-                      {/* Recurring schedule sub-row */}
                       {fp.recurring && (
-                        <div className="bg-card border-t border-primary/5 px-3 py-2 flex items-center gap-3 flex-wrap">
-                          <span className="text-[10px] text-muted-foreground uppercase tracking-wider shrink-0">Powtarzaj:</span>
-                          <div className="flex items-center gap-1">
-                            {DAY_LABELS.map((label, dayIdx) => (
-                              <button
-                                key={dayIdx}
-                                onClick={() => toggleRecurringDay(i, dayIdx)}
-                                className={`h-6 w-7 rounded text-[10px] font-medium transition-colors ${
-                                  fp.recurring_days.includes(dayIdx)
-                                    ? "bg-primary text-primary-foreground"
-                                    : "bg-secondary/50 text-muted-foreground hover:bg-secondary"
-                                }`}
-                              >
-                                {label}
-                              </button>
-                            ))}
-                          </div>
-                          <span className="text-[10px] text-muted-foreground shrink-0">o</span>
-                          <input
-                            type="time"
-                            value={fp.recurring_time}
-                            onChange={(e) => updateFanpage(i, { recurring_time: e.target.value })}
-                            className="h-6 rounded-md border border-primary/10 bg-secondary/50 px-1.5 text-[11px] w-[70px]"
-                          />
-                          <div className="flex items-center gap-1.5 shrink-0" title="Losowość czasu publikacji">
-                            <span className="text-[10px] text-muted-foreground">🎲</span>
-                            <input
-                              type="range"
-                              min={0}
-                              max={120}
-                              step={5}
-                              value={fp.recurring_jitter}
-                              onChange={(e) => updateFanpage(i, { recurring_jitter: Number(e.target.value) })}
-                              className="w-16 h-1 rounded-full appearance-none cursor-pointer bg-secondary accent-primary"
-                            />
-                            <span className="text-[10px] text-primary font-semibold w-12">
-                              {formatJitter(fp.recurring_jitter)}
-                            </span>
-                          </div>
-                          <span className="text-[10px] text-muted-foreground ml-auto">
-                            {formatRecurringDays(fp.recurring_days)}
-                          </span>
-                        </div>
+                        <RecurringSubRow entry={fp} index={i} onUpdate={updateFanpage} onToggleDay={toggleRecurringDay} />
                       )}
                     </Fragment>
                   ))}
@@ -798,163 +549,32 @@ export function FanpageScheduleModal({ config, onSave, onClose, accounts }: Fanp
         </div>
       </div>
 
-      {/* Background picker popover */}
-      {showBgPicker && (
-        <div
-          ref={bgPopoverRef}
-          className="fixed z-[70] bg-card border border-primary/10 rounded-lg shadow-xl p-3"
-          style={{ top: bgPos.top, left: bgPos.left, width: 280 }}
-        >
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
-              Tło fanpage
-            </span>
-            <button
-              onClick={() => {
-                updateFanpage(bgPickerTarget, { background_style: "" })
-                setShowBgPicker(false)
-              }}
-              className="text-[10px] text-muted-foreground hover:text-foreground"
-            >
-              Brak
-            </button>
-          </div>
-          <div className="grid grid-cols-7 gap-1.5">
-            {FB_BACKGROUNDS.map((bg) => {
-              const activeBg = fanpages[bgPickerTarget]?.background_style || ""
-              return (
-                <button
-                  key={bg.id}
-                  onClick={() => {
-                    updateFanpage(bgPickerTarget, { background_style: bg.id, media_files: [] })
-                    setShowBgPicker(false)
-                  }}
-                  className={`h-7 w-7 rounded-md border transition-all cursor-pointer hover:scale-110 ${
-                    activeBg === bg.id ? "border-primary ring-2 ring-primary/30 scale-110" : "border-primary/10"
-                  }`}
-                  style={{ backgroundColor: bg.color }}
-                  title={bg.label}
-                />
-              )
-            })}
-          </div>
-        </div>
+      {bgPicker.show && (
+        <BgPickerPopover
+          entries={fanpages}
+          target={bgPicker.target}
+          pos={bgPicker.pos}
+          popoverRef={bgPicker.ref}
+          onUpdate={updateFanpage}
+          onClose={bgPicker.close}
+          label="Tło fanpage"
+        />
       )}
 
-      {/* Media picker popover */}
-      {showMediaPicker && (() => {
-        const targetFp = fanpages[mediaPickerTarget]
-        if (!targetFp) return null
-        const fpMedia = targetFp.media_files || []
-        const libraryFiles = allUploadedFiles.filter((f) => !fpMedia.includes(f))
-
-        return (
-          <div
-            ref={mediaPopoverRef}
-            className="fixed z-[70] bg-card border border-primary/10 rounded-lg shadow-xl p-3"
-            style={{ top: mediaPos.top, left: mediaPos.left, width: 300 }}
-          >
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
-                Media fanpage
-              </span>
-              <button
-                onClick={() => {
-                  updateFanpage(mediaPickerTarget, { media_files: [] })
-                  setShowMediaPicker(false)
-                }}
-                className="text-[10px] text-muted-foreground hover:text-foreground"
-              >
-                Brak
-              </button>
-            </div>
-
-            {fpMedia.length > 0 && (
-              <div className="mb-2">
-                <div className="flex flex-wrap gap-1.5">
-                  {fpMedia.map((filename) => {
-                    const isVideo = filename.endsWith(".mp4") || filename.endsWith(".mov")
-                    return (
-                      <div key={filename} className="relative group/thumb">
-                        <div className="h-12 w-12 rounded border border-primary/20 bg-secondary/50 flex items-center justify-center overflow-hidden">
-                          {isVideo ? (
-                            <Film className="h-4 w-4 text-muted-foreground" />
-                          ) : (
-                            <img
-                              src={`/api/media/file/${filename}`}
-                              alt={filename}
-                              className="h-full w-full object-cover"
-                              onError={(e) => { (e.target as HTMLImageElement).style.display = "none" }}
-                            />
-                          )}
-                        </div>
-                        <button
-                          onClick={() => {
-                            updateFanpage(mediaPickerTarget, {
-                              media_files: fpMedia.filter((f) => f !== filename),
-                            })
-                          }}
-                          className="absolute -top-1 -right-1 h-3.5 w-3.5 rounded-full bg-rose-500 text-white flex items-center justify-center opacity-0 group-hover/thumb:opacity-100 transition-opacity"
-                        >
-                          <X className="h-2 w-2" />
-                        </button>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-
-            {libraryFiles.length > 0 && (
-              <div className="mb-2">
-                <span className="text-[9px] text-muted-foreground uppercase tracking-wider">Z biblioteki</span>
-                <div className="flex flex-wrap gap-1.5 mt-1">
-                  {libraryFiles.map((filename) => {
-                    const isVideo = filename.endsWith(".mp4") || filename.endsWith(".mov")
-                    return (
-                      <button
-                        key={filename}
-                        onClick={() => {
-                          updateFanpage(mediaPickerTarget, {
-                            media_files: [...fpMedia, filename],
-                            background_style: "",
-                          })
-                        }}
-                        className="h-10 w-10 rounded border border-dashed border-primary/20 bg-secondary/30 flex items-center justify-center overflow-hidden hover:border-primary/50 hover:bg-secondary/60 transition-colors cursor-pointer"
-                        title={filename.replace(/^[a-f0-9]+_/, "")}
-                      >
-                        {isVideo ? (
-                          <Film className="h-3.5 w-3.5 text-muted-foreground" />
-                        ) : (
-                          <img
-                            src={`/api/media/file/${filename}`}
-                            alt={filename}
-                            className="h-full w-full object-cover"
-                            onError={(e) => { (e.target as HTMLImageElement).style.display = "none" }}
-                          />
-                        )}
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-
-            <label className={`flex items-center gap-1.5 text-[10px] cursor-pointer transition-colors ${mediaUploading ? "text-muted-foreground" : "text-primary hover:text-primary/80"}`}>
-              <input
-                type="file"
-                accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime"
-                multiple
-                onChange={(e) => handlePerFanpageMediaUpload(e, mediaPickerTarget)}
-                disabled={mediaUploading}
-                className="hidden"
-              />
-              <Plus className="h-3 w-3" />
-              {mediaUploading ? "Przesyłanie..." : "Upload nowy plik"}
-            </label>
-          </div>
-        )
-      })()}
+      {mediaPicker.show && (
+        <MediaPickerPopover
+          entries={fanpages}
+          target={mediaPicker.target}
+          pos={mediaPicker.pos}
+          popoverRef={mediaPicker.ref}
+          allUploadedFiles={allUploadedFiles}
+          onUpdate={updateFanpage}
+          onUpload={handlePerFanpageMediaUpload}
+          uploading={mediaUploading}
+          onClose={mediaPicker.close}
+          label="Media fanpage"
+        />
+      )}
     </div>
   )
 }

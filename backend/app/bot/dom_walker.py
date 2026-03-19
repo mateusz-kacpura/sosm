@@ -33,6 +33,30 @@ class DomWalker:
     def __init__(self, page):
         self.page = page
 
+    async def _poll_js(
+        self, page, js: str, *, timeout: float = 10, interval: float = 0.5,
+        check=None, default=None,
+    ):
+        """Poll a JS expression until it returns a truthy result or timeout.
+
+        Args:
+            page: Playwright page
+            js: JavaScript expression to evaluate
+            timeout: max seconds to wait
+            interval: seconds between polls
+            check: optional callable(result) -> bool, defaults to ``result is not None``
+            default: value to return on timeout
+        """
+        is_ok = check or (lambda r: r is not None)
+        deadline = asyncio.get_event_loop().time() + timeout
+        while True:
+            result = await _eval_js(page, js)
+            if is_ok(result):
+                return result
+            if asyncio.get_event_loop().time() >= deadline:
+                return default
+            await asyncio.sleep(interval)
+
     async def find(
         self, selector: str, timeout: float = 10.0
     ) -> ElementRect | None:
@@ -47,14 +71,7 @@ class DomWalker:
             return {{x: r.x, y: r.y, w: r.width, h: r.height, text: (el.innerText || '').slice(0, 200)}};
         }})()"""
 
-        deadline = asyncio.get_event_loop().time() + timeout
-        while True:
-            result = await _eval_js(self.page, js)
-            if result is not None:
-                return result
-            if asyncio.get_event_loop().time() >= deadline:
-                return None
-            await asyncio.sleep(0.5)
+        return await self._poll_js(self.page, js, timeout=timeout)
 
     async def find_text(
         self, text: str, tag: str = "*", timeout: float = 10.0
@@ -74,14 +91,7 @@ class DomWalker:
             return null;
         }})()"""
 
-        deadline = asyncio.get_event_loop().time() + timeout
-        while True:
-            result = await _eval_js(self.page, js)
-            if result is not None:
-                return result
-            if asyncio.get_event_loop().time() >= deadline:
-                return None
-            await asyncio.sleep(0.5)
+        return await self._poll_js(self.page, js, timeout=timeout)
 
     async def find_all(self, selector: str) -> list[ElementRect]:
         """Return bounding rects for all elements matching *selector*."""
@@ -194,14 +204,7 @@ class DomWalker:
             return best;
         })()"""
 
-        deadline = asyncio.get_event_loop().time() + timeout
-        while True:
-            result = await _eval_js(self.page, js)
-            if result is not None:
-                return result
-            if asyncio.get_event_loop().time() >= deadline:
-                return None
-            await asyncio.sleep(0.5)
+        return await self._poll_js(self.page, js, timeout=timeout)
 
     async def find_dialog_submit_button(self, timeout: float = 5.0) -> ElementRect | None:
         """Find the primary submit/publish button inside a Facebook dialog.
@@ -275,14 +278,7 @@ class DomWalker:
             return null;
         })()"""
 
-        deadline = asyncio.get_event_loop().time() + timeout
-        while True:
-            result = await _eval_js(self.page, js)
-            if result is not None:
-                return result
-            if asyncio.get_event_loop().time() >= deadline:
-                return None
-            await asyncio.sleep(0.5)
+        return await self._poll_js(self.page, js, timeout=timeout)
 
     async def find_activity_review_dialog(self, timeout: float = 5.0) -> dict | None:
         """Detect Facebook's 'Activity Review' dialog (group rules question).
@@ -336,14 +332,7 @@ class DomWalker:
             return null;
         })()"""
 
-        deadline = asyncio.get_event_loop().time() + timeout
-        while True:
-            result = await _eval_js(self.page, js)
-            if result is not None:
-                return result
-            if asyncio.get_event_loop().time() >= deadline:
-                return None
-            await asyncio.sleep(0.5)
+        return await self._poll_js(self.page, js, timeout=timeout)
 
     async def find_background_button(self, timeout: float = 5.0) -> ElementRect | None:
         """Find the Aa background color button in the post creation dialog.
@@ -448,15 +437,10 @@ class DomWalker:
             return null;
         })()"""
 
-        deadline = asyncio.get_event_loop().time() + timeout
-        while True:
-            result = await _eval_js(self.page, js)
-            if result is not None:
-                logger.info("Background button found via: %s", result.get("text", "?"))
-                return result
-            if asyncio.get_event_loop().time() >= deadline:
-                return None
-            await asyncio.sleep(0.5)
+        result = await self._poll_js(self.page, js, timeout=timeout)
+        if result is not None:
+            logger.info("Background button found via: %s", result.get("text", "?"))
+        return result
 
     async def find_bg_color_button(self, target_rgb: str, timeout: float = 3.0) -> ElementRect | None:
         """Find a solid color button by its background-color CSS value.
@@ -487,14 +471,7 @@ class DomWalker:
             return null;
         }})()"""
 
-        deadline = asyncio.get_event_loop().time() + timeout
-        while True:
-            result = await _eval_js(self.page, js)
-            if result is not None:
-                return result
-            if asyncio.get_event_loop().time() >= deadline:
-                return None
-            await asyncio.sleep(0.3)
+        return await self._poll_js(self.page, js, timeout=timeout, interval=0.3)
 
     async def find_bg_hide_button(self, timeout: float = 2.0) -> ElementRect | None:
         """Find 'Ukryj opcje tła' / 'Hide background options' button to close the grid."""
@@ -528,14 +505,7 @@ class DomWalker:
             return null;
         })()"""
 
-        deadline = asyncio.get_event_loop().time() + timeout
-        while True:
-            result = await _eval_js(self.page, js)
-            if result is not None:
-                return result
-            if asyncio.get_event_loop().time() >= deadline:
-                return None
-            await asyncio.sleep(0.3)
+        return await self._poll_js(self.page, js, timeout=timeout, interval=0.3)
 
     async def find_bg_expand_button(self, timeout: float = 3.0) -> ElementRect | None:
         """Find the grid expand button (⊞) that reveals all decorative backgrounds.
@@ -581,14 +551,7 @@ class DomWalker:
             return null;
         })()"""
 
-        deadline = asyncio.get_event_loop().time() + timeout
-        while True:
-            result = await _eval_js(self.page, js)
-            if result is not None:
-                return result
-            if asyncio.get_event_loop().time() >= deadline:
-                return None
-            await asyncio.sleep(0.3)
+        return await self._poll_js(self.page, js, timeout=timeout, interval=0.3)
 
     async def find_bg_deco_by_index(self, index: int, timeout: float = 3.0) -> ElementRect | None:
         """Find a decorative background by its position (0-indexed) in the swatch row.
@@ -642,14 +605,7 @@ class DomWalker:
             return null;
         }})()"""
 
-        deadline = asyncio.get_event_loop().time() + timeout
-        while True:
-            result = await _eval_js(self.page, js)
-            if result is not None:
-                return result
-            if asyncio.get_event_loop().time() >= deadline:
-                return None
-            await asyncio.sleep(0.3)
+        return await self._poll_js(self.page, js, timeout=timeout, interval=0.3)
 
     async def find_media_button(self, timeout: float = 5.0) -> ElementRect | None:
         """Find the 'Zdjęcie/film' (Photo/video) button in the post dialog toolbar.
@@ -752,15 +708,10 @@ class DomWalker:
             return null;
         })()"""
 
-        deadline = asyncio.get_event_loop().time() + timeout
-        while True:
-            result = await _eval_js(self.page, js)
-            if result is not None:
-                logger.info("Media button found via: %s", result.get("text", "?"))
-                return result
-            if asyncio.get_event_loop().time() >= deadline:
-                return None
-            await asyncio.sleep(0.5)
+        result = await self._poll_js(self.page, js, timeout=timeout)
+        if result is not None:
+            logger.info("Media button found via: %s", result.get("text", "?"))
+        return result
 
     async def find_login_button(self, timeout: float = 5.0) -> ElementRect | None:
         """Find Facebook login submit button across all page layouts/languages.
@@ -862,11 +813,4 @@ class DomWalker:
             return null;
         })()"""
 
-        deadline = asyncio.get_event_loop().time() + timeout
-        while True:
-            result = await _eval_js(self.page, js)
-            if result is not None:
-                return result
-            if asyncio.get_event_loop().time() >= deadline:
-                return None
-            await asyncio.sleep(0.5)
+        return await self._poll_js(self.page, js, timeout=timeout)
